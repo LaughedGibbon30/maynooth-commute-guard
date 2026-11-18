@@ -1,0 +1,10 @@
+service_date,route,operator,scheduled_trips_monitored,ghost_or_canceled,heavy_delays_10m_plus,reliability_pct
+2026-11-18,115,Bus Éireann,54,10,17,50.0
+2026-11-18,115C,Bus Éireann,2,0,2,0.0
+2026-11-18,22,Bus Éireann,10,1,10,0.0
+2026-11-18,C3,Bus Átha Cliath – Dublin Bus,62,4,15,69.4
+2026-11-18,C4,Bus Átha Cliath – Dublin Bus,33,7,14,36.4
+2026-11-18,W6,Go-Ahead Ireland,53,2,15,67.9
+2026-11-18,X25,Bus Átha Cliath – Dublin Bus,6,0,1,83.3
+2026-11-18,X26,Bus Átha Cliath – Dublin Bus,2,0,0,100.0
+2026-11-18,X28,Bus Átha Cliath – Dublin Bus,4,0,2,50.0
