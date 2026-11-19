@@ -1,6 +1,7 @@
 import gc
 import csv
 import json
+import math
 import os
 import threading
 import time
@@ -317,6 +318,15 @@ def compute_phase2_analytics() -> dict:
     }
 
 
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
 def parse_gtfs_time(service_date: datetime, time_str: str) -> datetime | None:
     if not time_str:
         return None
@@ -446,16 +456,30 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         live_gps_trips = set()
         live_gps_fallback = set()
         live_gps_routes = set()
+        live_gps_coords: dict[str, tuple[float, float]] = {}
+        live_gps_coords_fallback: dict[tuple[str, str], tuple[float, float]] = {}
         for entity in vp_feed.entity:
             if not entity.HasField("vehicle"):
                 continue
-            t = entity.vehicle.trip
+            veh = entity.vehicle
+            t = veh.trip
+            coords = None
+            if veh.HasField("position"):
+                lat = float(veh.position.latitude)
+                lon = float(veh.position.longitude)
+                if lat != 0.0 or lon != 0.0:
+                    coords = (lat, lon)
             if t.trip_id:
                 live_gps_trips.add(t.trip_id)
+                if coords:
+                    live_gps_coords[t.trip_id] = coords
             if t.route_id:
                 live_gps_routes.add(t.route_id)
             if t.route_id and t.start_time:
-                live_gps_fallback.add((t.route_id, t.start_time))
+                fb = (t.route_id, t.start_time)
+                live_gps_fallback.add(fb)
+                if coords:
+                    live_gps_coords_fallback[fb] = coords
 
         trip_updates = {}
         trip_updates_fallback = {}
@@ -636,6 +660,15 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             fb_key = (item["route_id"], item["origin_departure_time"])
             tu_info = trip_updates.get(tid) or trip_updates_fallback.get(fb_key)
             has_gps = (tid in live_gps_trips) or (fb_key in live_gps_fallback)
+            bus_coords = live_gps_coords.get(tid) or live_gps_coords_fallback.get(fb_key)
+            stop_meta = LOOKUP.get("stops", {}).get(item["stop_id"], {})
+            s_lat = stop_meta.get("stop_lat")
+            s_lon = stop_meta.get("stop_lon")
+            distance_km = None
+            gps_eta_mins = None
+            if bus_coords and s_lat is not None and s_lon is not None:
+                distance_km = round(haversine_km(bus_coords[0], bus_coords[1], float(s_lat), float(s_lon)), 2)
+                gps_eta_mins = 0 if distance_km < 0.15 else max(1, round(distance_km * 3.0))
 
             delay_mins = (
                 tu_info["stop_delays"].get(item["stop_id"], tu_info["default_delay"])
@@ -729,6 +762,8 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 "mins_away": mins_away,
                 "delay_mins": delay_mins,
                 "has_gps": has_gps,
+                "distance_km": distance_km,
+                "gps_eta_mins": gps_eta_mins,
                 "status": status,
                 "transfer_alert": transfer_alert,
                 "crowd": dict(tally),
@@ -989,10 +1024,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (b.status === 'CANCELED') return '<span class="tag tag-ghost">OFFICIAL CANCELED</span>';
       if (b.status === 'SILENT_GHOST_RISK') return '<span class="tag tag-ghost">SILENT GHOST RISK (NO GPS)</span>';
       if (b.status === 'STALLED_GHOST') return '<span class="tag tag-ghost">STALLED / PHANTOM ETA</span>';
-      if (b.status === 'HEAVY_DELAY') return `<span class="tag tag-delay">+${b.delay_mins}m LATE (GPS)</span>`;
+      const distTxt = (b.distance_km !== null && b.distance_km !== undefined) ? ` ? ${b.distance_km} km away` : '';
+      const lagTxt = (b.gps_eta_mins !== null && b.gps_eta_mins !== undefined && b.gps_eta_mins >= b.mins_away + 5)
+        ? ` (~${b.gps_eta_mins}m by GPS)`
+        : '';
+      if (b.status === 'HEAVY_DELAY') return `<span class="tag tag-delay">+${b.delay_mins}m LATE${distTxt}${lagTxt}</span>`;
       if (b.status === 'GPS_LIVE') {
         const d = b.delay_mins > 0 ? ` (+${b.delay_mins}m)` : ' (On time)';
-        return `<span class="tag tag-live">GPS LIVE${d}</span>`;
+        return `<span class="tag tag-live">GPS LIVE${d}${distTxt}${lagTxt}</span>`;
       }
       return '<span class="tag tag-sched">SCHEDULED (NO PING YET)</span>';
     }

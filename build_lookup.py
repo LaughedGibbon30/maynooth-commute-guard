@@ -308,6 +308,7 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
                 "routes": set(),
             },
         )
+        entry["gtfs_rt_expected"] = bool(entry["gtfs_rt_expected"] or st["gtfs_rt_expected"])
         if st["route_short_name"]:
             entry["routes"].add(st["route_short_name"])
 
