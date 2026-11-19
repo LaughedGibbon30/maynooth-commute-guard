@@ -1,3 +1,4 @@
+import gc
 ﻿import csv
 import json
 import os
@@ -710,17 +711,20 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         }
         CACHE["timestamp"] = time.time()
         CACHE["payload"] = result
+        del vp_feed, tu_feed
+        gc.collect()
         return result
 
 
 def background_logger_worker():
+    time.sleep(8)
     while True:
         try:
             get_live_snapshot(force_refresh=True)
         except Exception as exc:
             print(f"[{datetime.now(TZ).strftime('%H:%M:%S')}] Background poll note: {exc}")
         sync_to_gist(force=False)
-        time.sleep(60)
+        time.sleep(90)
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
