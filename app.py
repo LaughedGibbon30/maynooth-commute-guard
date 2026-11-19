@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, jsonify, render_template_string, request, send_file
+from build_lookup import check_lookup_expiry, refresh_lookup_if_needed
 from google.transit import gtfs_realtime_pb2
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -54,8 +55,33 @@ TZ = ZoneInfo("Europe/Dublin")
 
 app = Flask(__name__)
 
+LOOKUP_LOCK = threading.Lock()
+LAST_GTFS_CHECK = 0.0
+
+try:
+    refresh_lookup_if_needed(force=False)
+except Exception as exc:
+    print(f"Startup GTFS refresh note: {exc}")
+
 with LOOKUP_FILE.open("r", encoding="utf-8") as f:
     LOOKUP = json.load(f)
+
+
+def maybe_refresh_gtfs(force: bool = False) -> dict:
+    global LOOKUP, LAST_GTFS_CHECK
+    now_ts = time.time()
+    if not force and (now_ts - LAST_GTFS_CHECK < 21600):
+        expired, reason = check_lookup_expiry()
+        return {"refreshed": False, "reason": reason}
+    LAST_GTFS_CHECK = now_ts
+    res = refresh_lookup_if_needed(force=force)
+    if res.get("refreshed") and LOOKUP_FILE.exists():
+        with LOOKUP_FILE.open("r", encoding="utf-8") as f:
+            fresh = json.load(f)
+        with LOOKUP_LOCK:
+            LOOKUP = fresh
+        print(f"Hot-reloaded LOOKUP ({res.get('stop_times_count')} rows, end={res.get('feed_info', {}).get('feed_end_date')}).")
+    return res
 
 
 def build_http_session() -> requests.Session:
@@ -1138,7 +1164,20 @@ def api_verify():
 
 @app.route("/api/health")
 def api_health():
-    return jsonify({"ok": True, "time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")})
+    expired, status_msg = check_lookup_expiry()
+    return jsonify({
+        "ok": True,
+        "time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        "feed_end_date": LOOKUP.get("feed_info", {}).get("feed_end_date", "unknown"),
+        "lookup_expired": expired,
+        "lookup_status": status_msg,
+    })
+
+
+@app.route("/api/refresh-gtfs", methods=["POST", "GET"])
+def api_refresh_gtfs():
+    force = request.args.get("force", "0") == "1"
+    return jsonify(maybe_refresh_gtfs(force=force))
 
 
 @app.route("/api/export/<filename>")
