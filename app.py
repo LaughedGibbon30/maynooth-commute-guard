@@ -28,6 +28,9 @@ def load_env(path: Path = Path(".env")):
 
 load_env()
 NTA_API_KEY = os.environ.get("NTA_API_KEY", "")
+GIST_ID = os.environ.get("GIST_ID", "").strip()
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+
 VEHICLE_POSITIONS_URL = "https://api.nationaltransport.ie/gtfsr/v2/Vehicles"
 TRIP_UPDATES_URL = "https://api.nationaltransport.ie/gtfsr/v2/TripUpdates"
 IRISH_RAIL_URL = (
@@ -72,15 +75,11 @@ HTTP = build_http_session()
 CACHE_LOCK = threading.Lock()
 CSV_LOCK = threading.Lock()
 CACHE = {"timestamp": 0.0, "payload": None, "cooldown_until": 0.0}
+LAST_GIST_SYNC = 0.0
 
 CROWD_TALLY: dict[str, dict[str, int]] = {}
 SEEN_EVENTS: set[tuple[str, str, str]] = set()
 SEEN_TRANSFERS: set[tuple[str, str, str]] = set()
-
-
-def GIST_ID = os.environ.get("GIST_ID", "").strip()
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
-LAST_GIST_SYNC = 0.0
 
 
 def sync_from_gist():
@@ -141,8 +140,7 @@ def sync_to_gist(force: bool = False):
         print(f"Gist backup note: {exc}")
 
 
-sync_from_gist()
-load_initial_state():
+def load_initial_state():
     if CROWD_CSV.exists():
         with CROWD_CSV.open("r", encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
@@ -171,11 +169,13 @@ load_initial_state():
                 ))
 
 
+sync_from_gist()
 load_initial_state()
 
 
 def append_csv_safe(path: Path, default_fieldnames: list[str], row: dict):
     with CSV_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
         file_exists = path.exists() and path.stat().st_size > 0
         if file_exists:
             with path.open("r", encoding="utf-8", newline="") as f:
@@ -440,7 +440,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         except Exception:
             trains = []
 
-        # 1. Background Phase 2 Logging (across all active Maynooth trips)
+        # 1. Background Phase 2 Logging
         active_window_trips = {}
         for item in LOOKUP["maynooth_stop_times"]:
             svid = item["service_id"]
@@ -480,7 +480,6 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             pred_arr_dt = info["arr_dt"] + timedelta(minutes=delay_mins)
             is_zombie = delay_mins > MAX_VALID_DELAY_MINS
 
-            # Log transfer alerts to Phase 2 CSV
             if (
                 not is_zombie
                 and delay_mins >= 2
@@ -556,7 +555,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                         },
                     )
 
-        # 2. Build Phase 3 UI Cards (including historical reliability & backup options)
+        # 2. Build Phase 3 UI Cards
         analytics = compute_phase2_analytics()
         route_map = analytics["route_map"]
 
@@ -623,7 +622,6 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                     sched_buf = (tr["exp_depart_dt"] - arr_dt).total_seconds() / 60.0 - WALK_BUFFER_MINS
                     live_buf = (tr["exp_depart_dt"] - pred_arr_dt).total_seconds() / 60.0 - WALK_BUFFER_MINS
                     if sched_buf >= 3 and -4 <= live_buf < MIN_SAFE_TRANSFER_MINS:
-                        # Find next backup train after this one
                         next_tr = next(
                             (t2 for t2 in trains[idx + 1 :] if t2["exp_depart_dt"] > tr["exp_depart_dt"]),
                             None,
@@ -677,7 +675,6 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
 
         upcoming_buses.sort(key=lambda x: x["mins_away"])
 
-        # Compute "Next Best Option" backup bus on same route & stop for disrupted trips
         for i, bus in enumerate(upcoming_buses):
             if bus["status"] in ("CANCELED", "SILENT_GHOST_RISK", "STALLED_GHOST"):
                 backup = next(
@@ -798,8 +795,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .btn-voted { border-color: var(--blue); color: var(--blue); }
     .btn-ok:not(:disabled):hover { border-color: var(--green); color: var(--green); }
     .btn-bad:not(:disabled):hover { border-color: var(--red); color: var(--red); }
-
-    /* Phase 2 Analytics View */
     .kpi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 14px; }
     .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
     .kpi-val { font-size: 1.4rem; font-weight: 800; color: var(--blue); }
@@ -810,7 +805,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .bar-track { background: #0f172a; height: 10px; border-radius: 999px; overflow: hidden; display: flex; }
     .bar-ghost { background: var(--red); height: 100%; }
     .bar-delay { background: var(--amber); height: 100%; }
-
     .toast {
       position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
       background: #22c55e; color: #052e16; font-weight: 700; padding: 8px 16px;
@@ -911,7 +905,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
 
     function statusBadge(b) {
-      // Dynamic Crowd Ground-Truth Overrides
       if (b.crowd.GHOST > 0 && ['SILENT_GHOST_RISK', 'CANCELED', 'STALLED_GHOST', 'SCHEDULED'].includes(b.status)) {
         return `<span class="tag tag-ghost">👻 CROWD CONFIRMED GHOST (${b.crowd.GHOST})</span>`;
       }
@@ -921,8 +914,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (b.crowd.ARRIVED > 0 && b.has_gps) {
         return `<span class="tag tag-live">✅ CROWD VERIFIED ARRIVED (${b.crowd.ARRIVED})</span>`;
       }
-
-      // Standard API Telemetry Badges
       if (b.status === 'CANCELED') return '<span class="tag tag-ghost">OFFICIAL CANCELED</span>';
       if (b.status === 'SILENT_GHOST_RISK') return '<span class="tag tag-ghost">SILENT GHOST RISK (NO GPS)</span>';
       if (b.status === 'STALLED_GHOST') return '<span class="tag tag-ghost">STALLED / PHANTOM ETA</span>';
