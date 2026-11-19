@@ -10,7 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, send_file
 from google.transit import gtfs_realtime_pb2
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -78,7 +78,71 @@ SEEN_EVENTS: set[tuple[str, str, str]] = set()
 SEEN_TRANSFERS: set[tuple[str, str, str]] = set()
 
 
-def load_initial_state():
+def GIST_ID = os.environ.get("GIST_ID", "").strip()
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+LAST_GIST_SYNC = 0.0
+
+
+def sync_from_gist():
+    if not (GIST_ID and GITHUB_TOKEN):
+        return
+    try:
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = HTTP.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=12)
+        if not resp.ok:
+            return
+        files = resp.json().get("files", {})
+        for fname in ("baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv"):
+            remote_content = files.get(fname, {}).get("content", "")
+            if not remote_content.strip():
+                continue
+            local_path = Path("data") / fname
+            local_lines = len(local_path.read_text(encoding="utf-8").splitlines()) if local_path.exists() else 0
+            remote_lines = len(remote_content.splitlines())
+            if remote_lines > local_lines:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_text(remote_content, encoding="utf-8")
+                print(f"Restored {fname} from Gist ({remote_lines} lines).")
+    except Exception as exc:
+        print(f"Gist restore note: {exc}")
+
+
+def sync_to_gist(force: bool = False):
+    global LAST_GIST_SYNC
+    if not (GIST_ID and GITHUB_TOKEN):
+        return
+    now_ts = time.time()
+    if not force and (now_ts - LAST_GIST_SYNC < 120):
+        return
+    try:
+        payload_files = {}
+        for fname in ("baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv"):
+            fpath = Path("data") / fname
+            if fpath.exists() and fpath.stat().st_size > 0:
+                payload_files[fname] = {"content": fpath.read_text(encoding="utf-8")}
+        if not payload_files:
+            return
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = HTTP.patch(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers=headers,
+            json={"files": payload_files},
+            timeout=12,
+        )
+        if resp.ok:
+            LAST_GIST_SYNC = now_ts
+    except Exception as exc:
+        print(f"Gist backup note: {exc}")
+
+
+sync_from_gist()
+load_initial_state():
     if CROWD_CSV.exists():
         with CROWD_CSV.open("r", encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
@@ -658,6 +722,7 @@ def background_logger_worker():
             get_live_snapshot(force_refresh=True)
         except Exception as exc:
             print(f"[{datetime.now(TZ).strftime('%H:%M:%S')}] Background poll note: {exc}")
+        sync_to_gist(force=False)
         time.sleep(60)
 
 
@@ -1076,7 +1141,37 @@ def api_verify():
     return jsonify({"ok": True, "tally": CROWD_TALLY[key]})
 
 
+@app.route("/api/health")
+def api_health():
+    return jsonify({"ok": True, "time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")})
+
+
+@app.route("/api/export/<filename>")
+def api_export(filename: str):
+    allowed = {"baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv"}
+    if filename not in allowed:
+        return jsonify({"error": "File not allowed"}), 404
+    fpath = Path("data") / filename
+    if not fpath.exists():
+        return jsonify({"error": "No data recorded yet"}), 404
+    return send_file(fpath, mimetype="text/csv", as_attachment=True, download_name=filename)
+
+
+_WORKER_STARTED = False
+
+
+def start_background_worker():
+    global _WORKER_STARTED
+    if _WORKER_STARTED:
+        return
+    _WORKER_STARTED = True
+    t = threading.Thread(target=background_logger_worker, daemon=True)
+    t.start()
+
+
+start_background_worker()
+
+
 if __name__ == "__main__":
-    bg_thread = threading.Thread(target=background_logger_worker, daemon=True)
-    bg_thread.start()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
