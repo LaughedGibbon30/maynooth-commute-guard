@@ -25,6 +25,21 @@ KNOWN_MAYNOOTH_STOPS = {
 }
 
 
+CORE_RT_OPERATORS = (
+    "dublin bus",
+    "bus ?tha cliath",
+    "bus atha cliath",
+    "go-ahead",
+    "bus ?ireann",
+    "bus eireann",
+)
+
+
+def is_core_rt_operator(agency_name: str) -> bool:
+    low = agency_name.strip().lower()
+    return any(tok in low for tok in CORE_RT_OPERATORS)
+
+
 def read_zip_csv(zf: zipfile.ZipFile, filename: str):
     with zf.open(filename) as raw:
         wrapper = io.TextIOWrapper(raw, encoding="utf-8-sig", newline="")
@@ -148,10 +163,12 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
             rid = row.get("route_id", "").strip()
             if rid in needed_route_ids:
                 aid = row.get("agency_id", "").strip()
+                aname = agencies.get(aid, "")
                 routes_meta[rid] = {
                     "route_short_name": row.get("route_short_name", "").strip() or row.get("route_long_name", "").strip(),
                     "agency_id": aid,
-                    "agency_name": agencies.get(aid, ""),
+                    "agency_name": aname,
+                    "gtfs_rt_expected": is_core_rt_operator(aname),
                 }
 
         calendar: dict[str, dict] = {}
@@ -240,6 +257,7 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
             "route_short_name": rmeta.get("route_short_name", ""),
             "agency_id": rmeta.get("agency_id", ""),
             "agency_name": rmeta.get("agency_name", ""),
+            "gtfs_rt_expected": rmeta.get("gtfs_rt_expected", True),
             "headsign": tmeta["headsign"],
             "direction_id": tmeta["direction_id"],
             "service_id": tmeta["service_id"],
@@ -257,8 +275,26 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
     feed_info["built_at"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
     feed_info["source_url"] = GTFS_REALTIME_ZIP_URL
 
+    agencies_summary: dict[str, dict] = {}
+    for st in stop_times_out:
+        aid = st["agency_id"] or "unknown"
+        entry = agencies_summary.setdefault(
+            aid,
+            {
+                "agency_name": st["agency_name"] or "Unknown Operator",
+                "gtfs_rt_expected": st["gtfs_rt_expected"],
+                "routes": set(),
+            },
+        )
+        if st["route_short_name"]:
+            entry["routes"].add(st["route_short_name"])
+
+    for aid, entry in agencies_summary.items():
+        entry["routes"] = sorted(entry["routes"])
+
     payload = {
         "feed_info": feed_info,
+        "agencies": agencies_summary,
         "stops": maynooth_stops,
         "calendar": calendar,
         "calendar_dates": calendar_dates,

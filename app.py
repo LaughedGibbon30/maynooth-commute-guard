@@ -221,6 +221,7 @@ def append_csv_safe(path: Path, default_fieldnames: list[str], row: dict):
 
 def compute_phase2_analytics() -> dict:
     route_stats = defaultdict(lambda: {"ghosts": 0, "canceled": 0, "delays": 0, "total": 0})
+    operator_stats = defaultdict(lambda: {"ghosts": 0, "canceled": 0, "delays": 0, "total": 0})
     totals = {
         "total_events": 0,
         "silent_ghosts": 0,
@@ -238,22 +239,28 @@ def compute_phase2_analytics() -> dict:
         with EVENTS_CSV.open("r", encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
                 rt = row.get("route", "Unknown")
+                op = (row.get("operator") or "").strip() or "Unlabeled (Legacy)"
                 at = row.get("alert_type", "")
                 totals["total_events"] += 1
                 route_stats[rt]["total"] += 1
+                operator_stats[op]["total"] += 1
 
                 if at == "SILENT_GHOST_RISK":
                     totals["silent_ghosts"] += 1
                     route_stats[rt]["ghosts"] += 1
+                    operator_stats[op]["ghosts"] += 1
                 elif at == "OFFICIAL_CANCELED":
                     totals["official_canceled"] += 1
                     route_stats[rt]["canceled"] += 1
+                    operator_stats[op]["canceled"] += 1
                 elif at == "STALLED_GHOST_RISK":
                     totals["stalled_ghosts"] += 1
                     route_stats[rt]["ghosts"] += 1
+                    operator_stats[op]["ghosts"] += 1
                 elif at == "HEAVY_DELAY":
                     totals["heavy_delays"] += 1
                     route_stats[rt]["delays"] += 1
+                    operator_stats[op]["delays"] += 1
 
     if TRANSFERS_CSV.exists():
         with TRANSFERS_CSV.open("r", encoding="utf-8", newline="") as f:
@@ -288,9 +295,24 @@ def compute_phase2_analytics() -> dict:
         reverse=True,
     )
 
+    ranked_operators = sorted(
+        [
+            {
+                "operator": op,
+                "ghosts": st["ghosts"] + st["canceled"],
+                "delays": st["delays"],
+                "total": st["total"],
+            }
+            for op, st in operator_stats.items()
+        ],
+        key=lambda x: x["total"],
+        reverse=True,
+    )
+
     return {
         "totals": totals,
         "routes": ranked_routes,
+        "operators": ranked_operators,
         "route_map": dict(route_stats),
     }
 
@@ -423,12 +445,15 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
 
         live_gps_trips = set()
         live_gps_fallback = set()
+        live_gps_routes = set()
         for entity in vp_feed.entity:
             if not entity.HasField("vehicle"):
                 continue
             t = entity.vehicle.trip
             if t.trip_id:
                 live_gps_trips.add(t.trip_id)
+            if t.route_id:
+                live_gps_routes.add(t.route_id)
             if t.route_id and t.start_time:
                 live_gps_fallback.add((t.route_id, t.start_time))
 
@@ -544,13 +569,15 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             if mins_since_origin < 10 or mins_until_stop < -10:
                 continue
 
+            is_rt_tracked = bool(info.get("gtfs_rt_expected", True)) or (info["route_id"] in live_gps_routes)
             alert_type = None
             if tu_info and tu_info["status"] == "CANCELED":
                 alert_type = "OFFICIAL_CANCELED"
             elif is_zombie:
                 alert_type = "STALLED_GHOST_RISK"
             elif not has_gps and tu_info is None:
-                alert_type = "SILENT_GHOST_RISK"
+                if is_rt_tracked:
+                    alert_type = "SILENT_GHOST_RISK"
             elif delay_mins >= 10:
                 alert_type = "HEAVY_DELAY"
 
@@ -625,11 +652,14 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 continue
             seen_trip_stop.add(dedup_key)
 
+            is_rt_tracked = bool(item.get("gtfs_rt_expected", True)) or (item["route_id"] in live_gps_routes)
             mins_since_origin = (now - origin_dt).total_seconds() / 60.0
             if tu_info and tu_info["status"] == "CANCELED":
                 status = "CANCELED"
             elif is_zombie:
                 status = "STALLED_GHOST"
+            elif not has_gps and tu_info is None and not is_rt_tracked:
+                status = "UNTRACKED_OPERATOR"
             elif not has_gps and tu_info is None and mins_since_origin >= 10:
                 status = "SILENT_GHOST_RISK"
             elif delay_mins >= 8:
@@ -680,6 +710,8 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 "trip_id": tid,
                 "service_date": s_date_str,
                 "route": rt,
+                "operator": item.get("agency_name", "") or "TFI Operator",
+                "is_rt_tracked": is_rt_tracked,
                 "headsign": item["headsign"],
                 "stop_id": item["stop_id"],
                 "stop_name": item["stop_name"],
@@ -944,6 +976,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (b.crowd.ARRIVED > 0 && b.has_gps) {
         return `<span class="tag tag-live">✅ CROWD VERIFIED ARRIVED (${b.crowd.ARRIVED})</span>`;
       }
+      if (b.status === 'UNTRACKED_OPERATOR') return '<span class="tag tag-sched">OPERATOR NO LIVE GPS</span>';
       if (b.status === 'CANCELED') return '<span class="tag tag-ghost">OFFICIAL CANCELED</span>';
       if (b.status === 'SILENT_GHOST_RISK') return '<span class="tag tag-ghost">SILENT GHOST RISK (NO GPS)</span>';
       if (b.status === 'STALLED_GHOST') return '<span class="tag tag-ghost">STALLED / PHANTOM ETA</span>';
@@ -983,6 +1016,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         `;
       }).join('') || '<div class="sub">No baseline events logged yet.</div>';
 
+      const maxOpTotal = (a.operators && a.operators.length) ? Math.max(...a.operators.map(o => o.total)) : 1;
+      const opBarsHtml = (a.operators || []).map(o => {
+        const gPct = Math.round((o.ghosts / maxOpTotal) * 100);
+        const dPct = Math.round((o.delays / maxOpTotal) * 100);
+        return `
+          <div class="bar-row">
+            <div class="bar-head">
+              <strong>${o.operator}</strong>
+              <span class="sub">${o.ghosts} ghost/cancel ? ${o.delays} heavy delays</span>
+            </div>
+            <div class="bar-track">
+              <div class="bar-ghost" style="width:${gPct}%"></div>
+              <div class="bar-delay" style="width:${dPct}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('') || '<div class="sub">No operator events logged yet.</div>';
+
       document.getElementById('analyticsView').innerHTML = `
         <div class="section-title">Phase 2 Baseline Telemetry Summary</div>
         <div class="kpi-grid">
@@ -1006,6 +1057,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         <div class="section-title">Disruptions by Route (Red = Ghost/Cancel, Amber = 10m+ Delay)</div>
         <div class="chart-card">${barsHtml}</div>
+
+        <div class="section-title">Disruptions by Operator (agency.txt)</div>
+        <div class="chart-card">${opBarsHtml}</div>
       `;
     }
 
@@ -1073,7 +1127,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <div class="route-badge">${b.route}</div>
               <div class="bus-info">
                 <div class="bus-head">${b.headsign || 'Maynooth Service'}</div>
-                <div class="bus-stop">${b.stop_name} ${formatRole(b.stop_role)}</div>
+                <div class="bus-stop">${b.stop_name} ${formatRole(b.stop_role)} ? <strong>${b.operator}</strong></div>
               </div>
               <div class="eta">${etaHtml}</div>
             </div>
