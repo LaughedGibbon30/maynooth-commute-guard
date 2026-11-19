@@ -45,6 +45,7 @@ LOOKUP_FILE = Path("data/maynooth_lookup.json")
 EVENTS_CSV = Path("data/baseline_events.csv")
 TRANSFERS_CSV = Path("data/transfer_alerts.csv")
 CROWD_CSV = Path("data/crowd_reports.csv")
+SUMMARY_CSV = Path("data/daily_summary.csv")
 
 STATION_BUS_STOP_IDS = {"8260DB003917", "8260DB007779", "8260B1354601"}
 CAMPUS_STOP_IDS = {"8260B1031601", "8260B1034301", "8260PB10049"}
@@ -106,9 +107,14 @@ CSV_LOCK = threading.Lock()
 CACHE = {"timestamp": 0.0, "payload": None, "cooldown_until": 0.0}
 LAST_GIST_SYNC = 0.0
 
+BOOT_TIME = datetime.now(TZ)
 CROWD_TALLY: dict[str, dict[str, int]] = {}
 SEEN_EVENTS: set[tuple[str, str, str]] = set()
 SEEN_TRANSFERS: set[tuple[str, str, str]] = set()
+SEEN_EVALUATED_TRIPS: set[tuple[str, str]] = set()
+SEEN_GHOST_TRIPS: set[tuple[str, str]] = set()
+SEEN_DELAY_TRIPS: set[tuple[str, str]] = set()
+SUMMARY_STATE: dict[tuple[str, str, str], dict] = {}
 
 
 def sync_from_gist():
@@ -123,7 +129,7 @@ def sync_from_gist():
         if not resp.ok:
             return
         files = resp.json().get("files", {})
-        for fname in ("baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv"):
+        for fname in ("baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv", "daily_summary.csv"):
             remote_content = files.get(fname, {}).get("content", "")
             if not remote_content.strip():
                 continue
@@ -147,7 +153,7 @@ def sync_to_gist(force: bool = False):
         return
     try:
         payload_files = {}
-        for fname in ("baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv"):
+        for fname in ("baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv", "daily_summary.csv"):
             fpath = Path("data") / fname
             if fpath.exists() and fpath.stat().st_size > 0:
                 payload_files[fname] = {"content": fpath.read_text(encoding="utf-8")}
@@ -197,6 +203,28 @@ def load_initial_state():
                     row.get("train_code", ""),
                 ))
 
+    for s_date, tid, at in SEEN_EVENTS:
+        if at in ("SILENT_GHOST_RISK", "OFFICIAL_CANCELED", "STALLED_GHOST_RISK", "STALE_GPS_ZOMBIE"):
+            SEEN_GHOST_TRIPS.add((s_date, tid))
+        elif at in ("HEAVY_DELAY", "KINEMATIC_DELAY_HIDDEN"):
+            SEEN_DELAY_TRIPS.add((s_date, tid))
+
+    if SUMMARY_CSV.exists():
+        with SUMMARY_CSV.open("r", encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                s_key = (
+                    row.get("service_date", ""),
+                    row.get("route", "Unknown"),
+                    row.get("operator", "") or "Unlabeled",
+                )
+                SUMMARY_STATE[s_key] = {
+                    "gtfs_rt_expected": str(row.get("gtfs_rt_expected", "True")).lower() == "true",
+                    "total_evaluated": int(row.get("total_evaluated", 0) or 0),
+                    "ghost_or_cancel": int(row.get("ghost_or_cancel", 0) or 0),
+                    "heavy_delays": int(row.get("heavy_delays", 0) or 0),
+                    "restored_on_boot": True,
+                }
+
 
 sync_from_gist()
 load_initial_state()
@@ -221,6 +249,49 @@ def append_csv_safe(path: Path, default_fieldnames: list[str], row: dict):
             writer.writerow(filtered_row)
 
 
+def flush_daily_summary(now: datetime):
+    if not SUMMARY_STATE:
+        return
+    fieldnames = [
+        "service_date", "route", "operator", "gtfs_rt_expected",
+        "total_evaluated", "ghost_or_cancel", "heavy_delays",
+        "clean_trips", "ghost_rate_pct", "otp_pct", "updated_at"
+    ]
+    rows = []
+    for (s_date, rt, op), st in sorted(SUMMARY_STATE.items()):
+        total_eval = max(
+            int(st.get("total_evaluated", 0)),
+            int(st.get("ghost_or_cancel", 0)) + int(st.get("heavy_delays", 0)),
+        )
+        ghosts = int(st.get("ghost_or_cancel", 0))
+        delays = int(st.get("heavy_delays", 0))
+        clean = max(0, total_eval - ghosts - delays)
+        ghost_pct = round((ghosts / total_eval) * 100, 1) if total_eval > 0 else 0.0
+        otp_pct = round((clean / total_eval) * 100, 1) if total_eval > 0 else 0.0
+        rows.append({
+            "service_date": s_date,
+            "route": rt,
+            "operator": op,
+            "gtfs_rt_expected": st.get("gtfs_rt_expected", True),
+            "total_evaluated": total_eval,
+            "ghost_or_cancel": ghosts,
+            "heavy_delays": delays,
+            "clean_trips": clean,
+            "ghost_rate_pct": ghost_pct,
+            "otp_pct": otp_pct,
+            "updated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    with CSV_LOCK:
+        SUMMARY_CSV.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = SUMMARY_CSV.with_suffix(".csv.tmp")
+        with tmp_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(tmp_path, SUMMARY_CSV)
+
+
 def compute_phase2_analytics() -> dict:
     route_stats = defaultdict(lambda: {"ghosts": 0, "canceled": 0, "delays": 0, "total": 0})
     operator_stats = defaultdict(lambda: {"ghosts": 0, "canceled": 0, "delays": 0, "total": 0})
@@ -237,6 +308,10 @@ def compute_phase2_analytics() -> dict:
         "crowd_confirmed_ghosts": 0,
         "crowd_gps_faults": 0,
         "crowd_verified_arrived": 0,
+        "total_evaluated": 0,
+        "clean_trips": 0,
+        "ghost_rate_pct": 0.0,
+        "otp_pct": 0.0,
     }
 
     if EVENTS_CSV.exists():
@@ -289,6 +364,26 @@ def compute_phase2_analytics() -> dict:
                     else:
                         totals["crowd_verified_arrived"] += 1
 
+    route_eval_map = defaultdict(int)
+    route_clean_map = defaultdict(int)
+    for (_, rt, _), st in SUMMARY_STATE.items():
+        ev = max(
+            int(st.get("total_evaluated", 0)),
+            int(st.get("ghost_or_cancel", 0)) + int(st.get("heavy_delays", 0)),
+        )
+        gh = int(st.get("ghost_or_cancel", 0))
+        dl = int(st.get("heavy_delays", 0))
+        cl = max(0, ev - gh - dl)
+        totals["total_evaluated"] += ev
+        totals["clean_trips"] += cl
+        route_eval_map[rt] += ev
+        route_clean_map[rt] += cl
+
+    if totals["total_evaluated"] > 0:
+        total_gh = totals["silent_ghosts"] + totals["official_canceled"] + totals["stalled_ghosts"]
+        totals["ghost_rate_pct"] = round((total_gh / totals["total_evaluated"]) * 100, 1)
+        totals["otp_pct"] = round((totals["clean_trips"] / totals["total_evaluated"]) * 100, 1)
+
     ranked_routes = sorted(
         [
             {
@@ -296,6 +391,13 @@ def compute_phase2_analytics() -> dict:
                 "ghosts": st["ghosts"] + st["canceled"],
                 "delays": st["delays"],
                 "total": st["total"],
+                "evaluated": max(route_eval_map[rt], st["total"]),
+                "ghost_rate_pct": round(((st["ghosts"] + st["canceled"]) / max(route_eval_map[rt], st["total"])) * 100, 1)
+                if max(route_eval_map[rt], st["total"]) > 0
+                else 0.0,
+                "otp_pct": round((route_clean_map[rt] / max(route_eval_map[rt], st["total"])) * 100, 1)
+                if max(route_eval_map[rt], st["total"]) > 0
+                else 0.0,
             }
             for rt, st in route_stats.items()
         ],
@@ -681,6 +783,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                                 },
                             )
 
+        summary_dirty = False
         for tid, info in active_window_trips.items():
             mins_since_origin = (now - info["origin_dt"]).total_seconds() / 60.0
             mins_until_stop = (info["arr_dt"] - now).total_seconds() / 60.0
@@ -725,6 +828,27 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 continue
 
             is_rt_tracked = bool(info.get("gtfs_rt_expected", True)) or (info["route_id"] in live_gps_routes)
+            s_key = (
+                info["service_date"],
+                info["route_short_name"],
+                (info.get("agency_name") or "").strip() or "Unlabeled",
+            )
+            bucket = SUMMARY_STATE.setdefault(
+                s_key,
+                {
+                    "gtfs_rt_expected": is_rt_tracked,
+                    "total_evaluated": 0,
+                    "ghost_or_cancel": 0,
+                    "heavy_delays": 0,
+                    "restored_on_boot": False,
+                },
+            )
+            ev_trip_key = (info["service_date"], tid)
+            if ev_trip_key not in SEEN_EVALUATED_TRIPS:
+                SEEN_EVALUATED_TRIPS.add(ev_trip_key)
+                if not bucket.get("restored_on_boot") or info["arr_dt"] > BOOT_TIME:
+                    bucket["total_evaluated"] += 1
+                    summary_dirty = True
             alert_type = None
             if tu_info and tu_info["status"] == "CANCELED":
                 alert_type = "OFFICIAL_CANCELED"
@@ -749,6 +873,17 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 e_key = (info["service_date"], tid, alert_type)
                 if e_key not in SEEN_EVENTS:
                     SEEN_EVENTS.add(e_key)
+                    trip_pair = (info["service_date"], tid)
+                    if alert_type in ("SILENT_GHOST_RISK", "OFFICIAL_CANCELED", "STALLED_GHOST_RISK", "STALE_GPS_ZOMBIE"):
+                        if trip_pair not in SEEN_GHOST_TRIPS:
+                            SEEN_GHOST_TRIPS.add(trip_pair)
+                            bucket["ghost_or_cancel"] += 1
+                            summary_dirty = True
+                    elif alert_type in ("HEAVY_DELAY", "KINEMATIC_DELAY_HIDDEN"):
+                        if trip_pair not in SEEN_DELAY_TRIPS:
+                            SEEN_DELAY_TRIPS.add(trip_pair)
+                            bucket["heavy_delays"] += 1
+                            summary_dirty = True
                     append_csv_safe(
                         EVENTS_CSV,
                         [
@@ -772,6 +907,9 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                             "stop_role": info.get("stop_role", ""),
                         },
                     )
+
+        if summary_dirty:
+            flush_daily_summary(now)
 
         # 2. Build Phase 3 UI Cards
         analytics = compute_phase2_analytics()
@@ -1198,7 +1336,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="bar-row">
             <div class="bar-head">
               <strong>Route ${r.route}</strong>
-              <span class="sub">${r.ghosts} ghost/cancel • ${r.delays} heavy delays</span>
+              <span class="sub">${r.ghosts} ghost (${r.ghost_rate_pct}%) ? ${r.delays} delay ? ${r.otp_pct}% OTP (${r.evaluated} trips)</span>
             </div>
             <div class="bar-track">
               <div class="bar-ghost" style="width:${gPct}%"></div>
@@ -1227,8 +1365,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }).join('') || '<div class="sub">No operator events logged yet.</div>';
 
       document.getElementById('analyticsView').innerHTML = `
-        <div class="section-title">Phase 2 Baseline Telemetry Summary</div>
+        <div class="section-title">Phase 2 Baseline Telemetry Summary (${t.total_evaluated} Scheduled Trips Evaluated)</div>
         <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-val" style="color:var(--green)">${t.otp_pct}%</div>
+            <div class="kpi-lbl">On-Time Performance (${t.clean_trips} of ${t.total_evaluated} clean)</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-val" style="color:var(--red)">${t.ghost_rate_pct}%</div>
+            <div class="kpi-lbl">Overall Ghost / Cancel Rate</div>
+          </div>
           <div class="kpi-card">
             <div class="kpi-val" style="color:var(--red)">${t.silent_ghosts}</div>
             <div class="kpi-lbl">Unannounced Silent Ghosts (vs ${t.official_canceled} Official Canceled)</div>
@@ -1252,6 +1398,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         <div class="section-title">Disruptions by Operator (agency.txt)</div>
         <div class="chart-card">${opBarsHtml}</div>
+
+        <div class="section-title">Export NTA Evidence CSVs</div>
+        <div class="pill-bar">
+          <a class="pill" href="/api/export/daily_summary.csv" style="text-decoration:none">daily_summary.csv</a>
+          <a class="pill" href="/api/export/baseline_events.csv" style="text-decoration:none">baseline_events.csv</a>
+          <a class="pill" href="/api/export/transfer_alerts.csv" style="text-decoration:none">transfer_alerts.csv</a>
+          <a class="pill" href="/api/export/crowd_reports.csv" style="text-decoration:none">crowd_reports.csv</a>
+        </div>
       `;
     }
 
@@ -1433,7 +1587,7 @@ def api_refresh_gtfs():
 
 @app.route("/api/export/<filename>")
 def api_export(filename: str):
-    allowed = {"baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv"}
+    allowed = {"baseline_events.csv", "transfer_alerts.csv", "crowd_reports.csv", "daily_summary.csv"}
     if filename not in allowed:
         return jsonify({"error": "File not allowed"}), 404
     fpath = Path("data") / filename
