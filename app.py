@@ -51,6 +51,7 @@ CAMPUS_STOP_IDS = {"8260B1031601", "8260B1034301", "8260PB10049"}
 WALK_BUFFER_MINS = 3
 MIN_SAFE_TRANSFER_MINS = 5
 MAX_VALID_DELAY_MINS = 45
+STALE_GPS_THRESHOLD_SECONDS = 300
 CACHE_TTL_SECONDS = 45
 TZ = ZoneInfo("Europe/Dublin")
 
@@ -228,7 +229,9 @@ def compute_phase2_analytics() -> dict:
         "silent_ghosts": 0,
         "official_canceled": 0,
         "stalled_ghosts": 0,
+        "late_avl_recoveries": 0,
         "heavy_delays": 0,
+        "kinematic_delays": 0,
         "transfer_risks": 0,
         "crowd_total": 0,
         "crowd_confirmed_ghosts": 0,
@@ -254,12 +257,16 @@ def compute_phase2_analytics() -> dict:
                     totals["official_canceled"] += 1
                     route_stats[rt]["canceled"] += 1
                     operator_stats[op]["canceled"] += 1
-                elif at == "STALLED_GHOST_RISK":
+                elif at in ("STALLED_GHOST_RISK", "STALE_GPS_ZOMBIE"):
                     totals["stalled_ghosts"] += 1
                     route_stats[rt]["ghosts"] += 1
                     operator_stats[op]["ghosts"] += 1
-                elif at == "HEAVY_DELAY":
+                elif at == "LATE_AVL_RECOVERY":
+                    totals["late_avl_recoveries"] += 1
+                elif at in ("HEAVY_DELAY", "KINEMATIC_DELAY_HIDDEN"):
                     totals["heavy_delays"] += 1
+                    if at == "KINEMATIC_DELAY_HIDDEN":
+                        totals["kinematic_delays"] += 1
                     route_stats[rt]["delays"] += 1
                     operator_stats[op]["delays"] += 1
 
@@ -325,6 +332,54 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def compute_kinematic_delay(
+    info: dict,
+    tid: str,
+    fb_key: tuple[str, str],
+    now: datetime,
+    live_gps_coords: dict[str, tuple[float, float]],
+    live_gps_coords_fallback: dict[tuple[str, str], tuple[float, float]],
+) -> tuple[float | None, float | None, float]:
+    bus_coords = live_gps_coords.get(tid) or live_gps_coords_fallback.get(fb_key)
+    stop_meta = LOOKUP.get("stops", {}).get(info["stop_id"], {})
+    s_lat = stop_meta.get("stop_lat")
+    s_lon = stop_meta.get("stop_lon")
+    if not bus_coords or s_lat is None or s_lon is None:
+        return None, None, 0.0
+
+    dist_km = haversine_km(bus_coords[0], bus_coords[1], float(s_lat), float(s_lon))
+    gps_eta_mins = 0.0 if dist_km < 0.15 else max(1.0, dist_km * 3.0)
+    sched_mins_left = (info["arr_dt"] - now).total_seconds() / 60.0
+
+    if dist_km < 0.8 or not (-5.0 <= sched_mins_left <= 45.0):
+        return round(dist_km, 2), round(gps_eta_mins, 1), 0.0
+
+    hidden_delay = max(0.0, round(gps_eta_mins - sched_mins_left, 1))
+    return round(dist_km, 2), round(gps_eta_mins, 1), hidden_delay
+
+
+def resolve_stop_delay(tu_info: dict | None, stop_id: str, stop_sequence: int | None = None) -> float:
+    if not tu_info:
+        return 0.0
+    stop_delays = tu_info.get("stop_delays", {})
+    if stop_id and stop_id in stop_delays:
+        return stop_delays[stop_id]
+    seq_delays = tu_info.get("seq_delays", [])
+    if stop_sequence is not None and seq_delays:
+        best_preceding = None
+        for seq, d_min in seq_delays:
+            if seq == stop_sequence:
+                return d_min
+            if seq < stop_sequence:
+                best_preceding = d_min
+            else:
+                break
+        if best_preceding is not None:
+            return best_preceding
+    first_delay = tu_info.get("first_delay")
+    return first_delay if first_delay is not None else 0.0
 
 
 def parse_gtfs_time(service_date: datetime, time_str: str) -> datetime | None:
@@ -455,14 +510,31 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
 
         live_gps_trips = set()
         live_gps_fallback = set()
+        stale_gps_trips = set()
+        stale_gps_fallback = set()
         live_gps_routes = set()
         live_gps_coords: dict[str, tuple[float, float]] = {}
         live_gps_coords_fallback: dict[tuple[str, str], tuple[float, float]] = {}
+        feed_ts = int(vp_feed.header.timestamp) if vp_feed.header.HasField("timestamp") else int(now_ts)
+
         for entity in vp_feed.entity:
             if not entity.HasField("vehicle"):
                 continue
             veh = entity.vehicle
             t = veh.trip
+            if t.route_id:
+                live_gps_routes.add(t.route_id)
+
+            ping_ts = int(veh.timestamp) if (veh.HasField("timestamp") and veh.timestamp > 0) else feed_ts
+            is_stale = (ping_ts > 0) and ((now_ts - ping_ts) > STALE_GPS_THRESHOLD_SECONDS)
+
+            if is_stale:
+                if t.trip_id:
+                    stale_gps_trips.add(t.trip_id)
+                if t.route_id and t.start_time:
+                    stale_gps_fallback.add((t.route_id, t.start_time))
+                continue
+
             coords = None
             if veh.HasField("position"):
                 lat = float(veh.position.latitude)
@@ -473,8 +545,6 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 live_gps_trips.add(t.trip_id)
                 if coords:
                     live_gps_coords[t.trip_id] = coords
-            if t.route_id:
-                live_gps_routes.add(t.route_id)
             if t.route_id and t.start_time:
                 fb = (t.route_id, t.start_time)
                 live_gps_fallback.add(fb)
@@ -491,8 +561,9 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             rel = gtfs_realtime_pb2.TripDescriptor.ScheduleRelationship.Name(
                 t.schedule_relationship
             )
-            default_delay = 0.0
+            first_delay = None
             stop_delays = {}
+            seq_delays = []
             for stu in tu.stop_time_update:
                 d_sec = None
                 if stu.HasField("arrival") and stu.arrival.HasField("delay"):
@@ -501,11 +572,20 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                     d_sec = stu.departure.delay
                 if d_sec is not None:
                     d_min = round(d_sec / 60, 1)
-                    default_delay = d_min
+                    if first_delay is None:
+                        first_delay = d_min
                     if stu.stop_id:
                         stop_delays[stu.stop_id] = d_min
+                    if stu.HasField("stop_sequence"):
+                        seq_delays.append((int(stu.stop_sequence), d_min))
 
-            payload = {"status": rel, "default_delay": default_delay, "stop_delays": stop_delays}
+            seq_delays.sort(key=lambda x: x[0])
+            payload = {
+                "status": rel,
+                "first_delay": first_delay,
+                "stop_delays": stop_delays,
+                "seq_delays": seq_delays,
+            }
             if t.trip_id:
                 trip_updates[t.trip_id] = payload
             if t.route_id and t.start_time:
@@ -516,8 +596,11 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         except Exception:
             trains = []
 
-        # 1. Background Phase 2 Logging
+        # 1. Background Phase 2 Logging (Trip-level ghosts + Dedicated Station-stop transfers)
         active_window_trips = {}
+        station_stop_visits = []
+        seen_station_visit = set()
+
         for item in LOOKUP["maynooth_stop_times"]:
             svid = item["service_id"]
             if svid in today_services:
@@ -532,37 +615,43 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             if not origin_dt or not arr_dt:
                 continue
 
+            s_date_str = s_date.strftime("%Y-%m-%d")
             tid = item["trip_id"]
+            enriched = {
+                **item,
+                "service_date": s_date_str,
+                "origin_dt": origin_dt,
+                "arr_dt": arr_dt,
+            }
+
             if tid not in active_window_trips or arr_dt < active_window_trips[tid]["arr_dt"]:
-                active_window_trips[tid] = {
-                    **item,
-                    "service_date": s_date.strftime("%Y-%m-%d"),
-                    "origin_dt": origin_dt,
-                    "arr_dt": arr_dt,
-                }
+                active_window_trips[tid] = enriched
 
-        for tid, info in active_window_trips.items():
-            mins_since_origin = (now - info["origin_dt"]).total_seconds() / 60.0
-            mins_until_stop = (info["arr_dt"] - now).total_seconds() / 60.0
+            if (
+                item["stop_id"] in STATION_BUS_STOP_IDS
+                and item.get("stop_role") != "ORIGIN"
+                and item.get("drop_off_type", "0") != "1"
+            ):
+                sv_key = (s_date_str, tid, item["stop_id"])
+                if sv_key not in seen_station_visit:
+                    seen_station_visit.add(sv_key)
+                    station_stop_visits.append(enriched)
+
+        for info in station_stop_visits:
+            tid = info["trip_id"]
             fb_key = (info["route_id"], info["origin_departure_time"])
-
             tu_info = trip_updates.get(tid) or trip_updates_fallback.get(fb_key)
-            has_gps = (tid in live_gps_trips) or (fb_key in live_gps_fallback)
-            delay_mins = (
-                tu_info["stop_delays"].get(info["stop_id"], tu_info["default_delay"])
-                if tu_info
-                else 0.0
+            api_delay_mins = resolve_stop_delay(tu_info, info["stop_id"], info.get("stop_sequence"))
+            _, _, kin_delay_mins = compute_kinematic_delay(
+                info, tid, fb_key, now, live_gps_coords, live_gps_coords_fallback
             )
+            is_zombie = api_delay_mins > MAX_VALID_DELAY_MINS
+            delay_mins = api_delay_mins if is_zombie else max(api_delay_mins, kin_delay_mins)
             pred_arr_dt = info["arr_dt"] + timedelta(minutes=delay_mins)
-            is_zombie = delay_mins > MAX_VALID_DELAY_MINS
 
             if (
                 not is_zombie
                 and delay_mins >= 2
-                and info["stop_id"] in STATION_BUS_STOP_IDS
-                and info.get("stop_role") != "ORIGIN"
-                and info.get("maynooth_flow") != "OUTBOUND"
-                and info.get("drop_off_type", "0") != "1"
                 and -2 <= (pred_arr_dt - now).total_seconds() / 60.0 <= 45
             ):
                 for tr in trains:
@@ -592,6 +681,46 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                                 },
                             )
 
+        for tid, info in active_window_trips.items():
+            mins_since_origin = (now - info["origin_dt"]).total_seconds() / 60.0
+            mins_until_stop = (info["arr_dt"] - now).total_seconds() / 60.0
+            fb_key = (info["route_id"], info["origin_departure_time"])
+
+            tu_info = trip_updates.get(tid) or trip_updates_fallback.get(fb_key)
+            has_gps = (tid in live_gps_trips) or (fb_key in live_gps_fallback)
+            is_stale_gps = ((tid in stale_gps_trips) or (fb_key in stale_gps_fallback)) and not has_gps
+            is_stale_gps = ((tid in stale_gps_trips) or (fb_key in stale_gps_fallback)) and not has_gps
+            delay_mins = resolve_stop_delay(tu_info, info["stop_id"], info.get("stop_sequence"))
+            is_zombie = delay_mins > MAX_VALID_DELAY_MINS
+
+            if has_gps and (info["service_date"], tid, "SILENT_GHOST_RISK") in SEEN_EVENTS:
+                rec_key = (info["service_date"], tid, "LATE_AVL_RECOVERY")
+                if rec_key not in SEEN_EVENTS:
+                    SEEN_EVENTS.add(rec_key)
+                    append_csv_safe(
+                        EVENTS_CSV,
+                        [
+                            "logged_at", "service_date", "route", "operator", "headsign",
+                            "trip_id", "alert_type", "origin_dep", "sched_maynooth_arr",
+                            "delay_mins", "has_gps", "stop_name", "stop_role"
+                        ],
+                        {
+                            "logged_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                            "service_date": info["service_date"],
+                            "route": info["route_short_name"],
+                            "operator": info.get("agency_name", ""),
+                            "headsign": info["headsign"],
+                            "trip_id": tid,
+                            "alert_type": "LATE_AVL_RECOVERY",
+                            "origin_dep": info["origin_departure_time"],
+                            "sched_maynooth_arr": info["arrival_time"],
+                            "delay_mins": delay_mins,
+                            "has_gps": True,
+                            "stop_name": info["stop_name"],
+                            "stop_role": info.get("stop_role", ""),
+                        },
+                    )
+
             if mins_since_origin < 10 or mins_until_stop < -10:
                 continue
 
@@ -601,11 +730,20 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 alert_type = "OFFICIAL_CANCELED"
             elif is_zombie:
                 alert_type = "STALLED_GHOST_RISK"
+            elif is_stale_gps:
+                alert_type = "STALE_GPS_ZOMBIE"
             elif not has_gps and tu_info is None:
                 if is_rt_tracked:
                     alert_type = "SILENT_GHOST_RISK"
             elif delay_mins >= 10:
                 alert_type = "HEAVY_DELAY"
+            else:
+                _, _, kin_delay_mins = compute_kinematic_delay(
+                    info, tid, fb_key, now, live_gps_coords, live_gps_coords_fallback
+                )
+                if kin_delay_mins >= 10 and delay_mins < 5:
+                    alert_type = "KINEMATIC_DELAY_HIDDEN"
+                    delay_mins = kin_delay_mins
 
             if alert_type:
                 e_key = (info["service_date"], tid, alert_type)
@@ -670,11 +808,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 distance_km = round(haversine_km(bus_coords[0], bus_coords[1], float(s_lat), float(s_lon)), 2)
                 gps_eta_mins = 0 if distance_km < 0.15 else max(1, round(distance_km * 3.0))
 
-            delay_mins = (
-                tu_info["stop_delays"].get(item["stop_id"], tu_info["default_delay"])
-                if tu_info
-                else 0.0
-            )
+            delay_mins = resolve_stop_delay(tu_info, item["stop_id"], item.get("stop_sequence"))
             is_zombie = delay_mins > MAX_VALID_DELAY_MINS
             pred_arr_dt = arr_dt if is_zombie else arr_dt + timedelta(minutes=delay_mins)
             mins_away = round((pred_arr_dt - now).total_seconds() / 60.0)
@@ -693,6 +827,8 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 status = "CANCELED"
             elif is_zombie:
                 status = "STALLED_GHOST"
+            elif is_stale_gps:
+                status = "STALE_GPS"
             elif not has_gps and tu_info is None and not is_rt_tracked:
                 status = "UNTRACKED_OPERATOR"
             elif not has_gps and tu_info is None and mins_since_origin >= 10:
@@ -708,7 +844,6 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             if (
                 item["stop_id"] in STATION_BUS_STOP_IDS
                 and item.get("stop_role") != "ORIGIN"
-                and item.get("maynooth_flow") != "OUTBOUND"
                 and item.get("drop_off_type", "0") != "1"
                 and status not in ("CANCELED", "STALLED_GHOST")
             ):
@@ -777,14 +912,14 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         upcoming_buses.sort(key=lambda x: x["mins_away"])
 
         for i, bus in enumerate(upcoming_buses):
-            if bus["status"] in ("CANCELED", "SILENT_GHOST_RISK", "STALLED_GHOST"):
+            if bus["status"] in ("CANCELED", "SILENT_GHOST_RISK", "STALLED_GHOST", "STALE_GPS"):
                 backup = next(
                     (
                         b2
                         for b2 in upcoming_buses[i + 1 :]
                         if b2["route"] == bus["route"]
                         and b2["stop_id"] == bus["stop_id"]
-                        and b2["status"] not in ("CANCELED", "SILENT_GHOST_RISK", "STALLED_GHOST")
+                        and b2["status"] not in ("CANCELED", "SILENT_GHOST_RISK", "STALLED_GHOST", "STALE_GPS")
                     ),
                     None,
                 )
@@ -804,7 +939,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             "stats": {
                 "active_gps_national": len(live_gps_trips),
                 "ghost_or_cancel": sum(
-                    1 for b in upcoming_buses if b["status"] in ("CANCELED", "SILENT_GHOST_RISK", "STALLED_GHOST")
+                    1 for b in upcoming_buses if b["status"] in ("CANCELED", "SILENT_GHOST_RISK", "STALLED_GHOST", "STALE_GPS")
                 ),
                 "transfer_risks": sum(1 for b in upcoming_buses if b["transfer_alert"]),
             },
@@ -1024,6 +1159,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (b.status === 'CANCELED') return '<span class="tag tag-ghost">OFFICIAL CANCELED</span>';
       if (b.status === 'SILENT_GHOST_RISK') return '<span class="tag tag-ghost">SILENT GHOST RISK (NO GPS)</span>';
       if (b.status === 'STALLED_GHOST') return '<span class="tag tag-ghost">STALLED / PHANTOM ETA</span>';
+      if (b.status === 'STALE_GPS') return '<span class="tag tag-ghost">FROZEN GPS (STALE PING)</span>';
       const distTxt = (b.distance_km !== null && b.distance_km !== undefined) ? ` ? ${b.distance_km} km away` : '';
       const lagTxt = (b.gps_eta_mins !== null && b.gps_eta_mins !== undefined && b.gps_eta_mins >= b.mins_away + 5)
         ? ` (~${b.gps_eta_mins}m by GPS)`
