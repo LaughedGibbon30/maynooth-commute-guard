@@ -4,7 +4,15 @@ from pathlib import Path
 import requests
 from google.transit import gtfs_realtime_pb2
 
-NTA_API_KEY = "7328fbd4f7e5446b8775c45332c298a7"
+import os
+from pathlib import Path
+
+for _line in Path(".env").read_text(encoding="utf-8").splitlines() if Path(".env").exists() else []:
+    if _line.strip() and not _line.strip().startswith("#") and "=" in _line:
+        _k, _v = _line.split("=", 1)
+        os.environ.setdefault(_k.strip(), _v.strip())
+
+NTA_API_KEY = os.environ.get("NTA_API_KEY", "")
 VEHICLE_POSITIONS_URL = "https://api.nationaltransport.ie/gtfsr/v2/Vehicles"
 TRIP_UPDATES_URL = "https://api.nationaltransport.ie/gtfsr/v2/TripUpdates"
 IRISH_RAIL_URL = (
