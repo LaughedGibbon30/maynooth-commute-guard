@@ -1451,6 +1451,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
       busesBox.innerHTML = buses.map(b => {
         const isCanceled = b.status === 'CANCELED';
+        const isTerminating = (b.stop_role === 'TERMINUS' || b.pickup_type === '1');
         const etaHtml = isCanceled
           ? `<div class="eta-mins" style="color:var(--red)">Canceled</div><div class="eta-clock" style="text-decoration:line-through">Sched ${b.sched_time}</div>`
           : `<div class="eta-mins">${b.mins_away <= 0 ? 'Due' : b.mins_away + ' min'}</div><div class="eta-clock">Pred ${b.pred_time} (Sched ${b.sched_time})</div>`;
@@ -1470,7 +1471,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         const vKey = `${b.service_date}|${b.trip_id}`;
         const userVote = voted[vKey];
         const arrivedDisabled = (isCanceled || userVote) ? 'disabled' : '';
-        const ghostDisabled = userVote ? 'disabled' : '';
+        const ghostDisabled = (isTerminating || userVote) ? 'disabled' : '';
 
         return `
           <div class="bus-card">
