@@ -1284,7 +1284,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="pill" onclick="setTab('inbound', this)">Inbound (To Maynooth)</button>
     <button class="pill" onclick="setTab('station', this)">Maynooth Station</button>
     <button class="pill" onclick="setTab('campus', this)">MU Campus</button>
-    <button class="pill" onclick="setTab('analytics', this)">📊 Reliability Data</button>
+    <button class="pill" onclick="setTab('analytics', this)">Reliability Data</button>
   </div>
 
   <div id="liveView">
@@ -1375,13 +1375,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     function statusBadge(b) {
       if (b.crowd.GHOST > 0 && ['SILENT_GHOST_RISK', 'CANCELED', 'STALLED_GHOST', 'SCHEDULED'].includes(b.status)) {
-        return `<span class="tag tag-ghost">👻 CROWD CONFIRMED GHOST (${b.crowd.GHOST})</span>`;
+        return `<span class="tag tag-ghost">CROWD CONFIRMED GHOST (${b.crowd.GHOST})</span>`;
       }
       if (b.crowd.ARRIVED > 0 && !b.has_gps) {
-        return `<span class="tag tag-delay">📡 UNTRACKED BUS • GPS FAULT (${b.crowd.ARRIVED})</span>`;
+        return `<span class="tag tag-delay">UNTRACKED BUS • GPS FAULT (${b.crowd.ARRIVED})</span>`;
       }
       if (b.crowd.ARRIVED > 0 && b.has_gps) {
-        return `<span class="tag tag-live">✅ CROWD VERIFIED ARRIVED (${b.crowd.ARRIVED})</span>`;
+        return `<span class="tag tag-live">CROWD VERIFIED ARRIVED (${b.crowd.ARRIVED})</span>`;
       }
       if (b.status === 'UNTRACKED_OPERATOR') return '<span class="tag tag-sched">OPERATOR NO LIVE GPS</span>';
       if (b.status === 'CANCELED') return '<span class="tag tag-ghost">OFFICIAL CANCELED</span>';
@@ -1547,15 +1547,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           : `<div class="eta-mins">${b.mins_away <= 0 ? 'Due' : b.mins_away + ' min'}</div><div class="eta-clock">Pred ${b.pred_time} (Sched ${b.sched_time})</div>`;
 
         const histPill = (b.history && (b.history.ghosts > 0 || b.history.delays > 0))
-          ? `<span class="tag tag-hist">📊 Logged: ${b.history.ghosts} ghost • ${b.history.delays} delay</span>`
+          ? `<span class="tag tag-hist">Logged: ${b.history.ghosts} ghost • ${b.history.delays} delay</span>`
           : '';
 
         const transferHtml = b.transfer_alert
-          ? `<div class="transfer-box">⚠️ <strong>Tight Train Transfer:</strong> ${b.transfer_alert.buffer_mins} min margin for ${b.transfer_alert.train_dep} train to ${b.transfer_alert.train_dest}${b.transfer_alert.backup_train ? `<br>🚆 <em>${b.transfer_alert.backup_train}</em>` : ''}</div>`
+          ? `<div class="transfer-box"><strong>Tight Train Transfer:</strong> ${b.transfer_alert.buffer_mins} min margin for ${b.transfer_alert.train_dep} train to ${b.transfer_alert.train_dest}${b.transfer_alert.backup_train ? `<br><em>${b.transfer_alert.backup_train}</em>` : ''}</div>`
           : '';
 
         const backupHtml = b.backup_bus
-          ? `<div class="backup-box">💡 <strong>Backup Option:</strong> ${b.backup_bus}</div>`
+          ? `<div class="backup-box"><strong>Backup Option:</strong> ${b.backup_bus}</div>`
           : '';
 
         const vKey = `${b.service_date}|${b.trip_id}`;
@@ -1576,15 +1576,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div class="tags">${statusBadge(b)}${flowBadge(b)}${histPill}</div>
             ${transferHtml}
             ${backupHtml}
-            ${b.diagnostic ? `<div class="diag-box ${['CANCELED','SILENT_GHOST_RISK','CROWD_CONFIRMED_GHOST','STALE_GPS','STALLED_GHOST'].includes(b.status) ? 'diag-bad' : (['HEAVY_DELAY','GPS_FAULT_VERIFIED'].includes(b.status) ? 'diag-warn' : '')}">?? <strong>Diagnostic:</strong> ${b.diagnostic}${(b.bus_lat !== null && b.bus_lon !== null) ? ` <span style="color:#38bdf8;font-weight:600;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();focusBusOnMap('${b.trip_id}', true)">[Locate on Map]</span>` : ''}</div>` : ''}
+            ${b.diagnostic ? `<div class="diag-box ${['CANCELED','SILENT_GHOST_RISK','CROWD_CONFIRMED_GHOST','STALE_GPS','STALLED_GHOST'].includes(b.status) ? 'diag-bad' : (['HEAVY_DELAY','GPS_FAULT_VERIFIED'].includes(b.status) ? 'diag-warn' : '')}"><strong>Diagnostic:</strong> ${b.diagnostic}${(b.bus_lat !== null && b.bus_lon !== null) ? ` <span style="color:#38bdf8;font-weight:600;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();focusBusOnMap('${b.trip_id}', true)">[Locate on Map]</span>` : ''}</div>` : ''}
             <div class="verify-row" onclick="event.stopPropagation()">
               <button class="btn btn-ok ${userVote === 'ARRIVED' ? 'btn-voted' : ''}" ${arrivedDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','ARRIVED')">
-                ✅ ${userVote === 'ARRIVED' ? 'Voted Arrived' : 'Bus Arrived'} (${b.crowd.ARRIVED})
+                ${userVote === 'ARRIVED' ? 'Voted Arrived' : 'Bus Arrived'} (${b.crowd.ARRIVED})
               </button>
               <button class="btn btn-bad ${userVote === 'GHOST' ? 'btn-voted' : ''}" ${ghostDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','GHOST')">
-                👻 ${userVote === 'GHOST' ? 'Voted Ghost' : 'Ghost Bus'} (${b.crowd.GHOST})
+                ${userVote === 'GHOST' ? 'Voted Ghost' : 'Ghost Bus'} (${b.crowd.GHOST})
               </button>
             </div>
           </div>
@@ -1688,7 +1688,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       let plotted = 0;
 
       (buses || []).forEach(b => {
-        if (b.bus_lat === null || b.bus_lat === undefined || b.bus_lon === null || b.bus_lon === undefined) return;
+        const lat = Number(b.bus_lat); const lon = Number(b.bus_lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return;
         plotted += 1;
         let bg = '#22c55e';
         if (['CANCELED', 'SILENT_GHOST_RISK', 'CROWD_CONFIRMED_GHOST', 'STALE_GPS', 'STALLED_GHOST'].includes(b.status)) {
@@ -1711,7 +1712,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div style="margin-top:4px;color:#334155">${b.diagnostic || ''}</div>
           </div>
         `;
-        const marker = L.marker([b.bus_lat, b.bus_lon], { icon })
+        const marker = L.marker([lat, lon], { icon })
           .bindPopup(popupHtml)
           .on('click', () => {
             document.querySelectorAll('.bus-card.card-highlight').forEach(c => c.classList.remove('card-highlight'));
