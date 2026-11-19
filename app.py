@@ -1,5 +1,5 @@
 import gc
-﻿import csv
+import csv
 import json
 import os
 import threading
