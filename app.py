@@ -484,6 +484,45 @@ def resolve_stop_delay(tu_info: dict | None, stop_id: str, stop_sequence: int | 
     return first_delay if first_delay is not None else 0.0
 
 
+def build_bus_diagnostic(b: dict) -> str:
+    status = b.get("status", "SCHEDULED")
+    mins_away = max(0, int(b.get("mins_away", 0) or 0))
+    delay_mins = float(b.get("delay_mins", 0) or 0)
+    dist_km = b.get("distance_km")
+    gps_eta = b.get("gps_eta_mins")
+    mso = max(12, int(b.get("mins_since_origin", 12) or 12))
+    ta = b.get("transfer_alert")
+
+    if status == "CANCELED":
+        return "Operator officially marked this trip CANCELED in the live TFI feed."
+    if status == "CROWD_CONFIRMED_GHOST":
+        return "Commuters at the stop confirmed this scheduled bus never arrived (crowd-verified ghost)."
+    if status == "GPS_FAULT_VERIFIED":
+        return "Commuters verified this bus arrived physically despite an offline onboard GPS transponder."
+    if ta:
+        buf = ta.get("buffer_mins", 1)
+        dest = ta.get("train_dest", "Dublin")
+        return f"Bus delay cuts your Maynooth Station walk buffer to {buf} min \u2014 likely to miss the next {dest} train."
+    if status == "SILENT_GHOST_RISK":
+        return f"No GPS signal detected {mso}+ mins after scheduled terminus departure \u2014 high silent-ghost risk."
+    if status == "STALE_GPS":
+        return "Vehicle GPS transponder froze over 5 minutes ago \u2014 possible depot-parked or stalled bus."
+    if status == "STALLED_GHOST":
+        return "TFI delay prediction is abnormally stalled (+45m+ phantom ETA) \u2014 treat as high ghost risk."
+    if status == "UNTRACKED_OPERATOR":
+        return "Operator does not broadcast live GPS telemetry on this route; rely on scheduled timetable."
+    if dist_km is not None and gps_eta is not None and gps_eta >= mins_away + 5:
+        return f"Schedule claims due in {mins_away} min, but live GPS places the bus {dist_km} km away (~{gps_eta} min by road)."
+    if status == "HEAVY_DELAY" or delay_mins >= 8:
+        dist_txt = f" ({dist_km} km away)" if dist_km is not None else ""
+        return f"Running {round(delay_mins, 1)} min behind schedule in live traffic{dist_txt}."
+    if status == "GPS_LIVE":
+        dist_txt = f"{dist_km} km away" if dist_km is not None else "active on route"
+        delay_txt = f"+{round(delay_mins, 1)} min delay" if delay_mins > 0 else "on schedule"
+        return f"Live GPS transponder active ({dist_txt}, {delay_txt})."
+    return "Scheduled service awaiting terminus departure or initial GPS login."
+
+
 def parse_gtfs_time(service_date: datetime, time_str: str) -> datetime | None:
     if not time_str:
         return None
@@ -1037,6 +1076,9 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 "has_gps": has_gps,
                 "distance_km": distance_km,
                 "gps_eta_mins": gps_eta_mins,
+                "bus_lat": round((live_gps_coords.get(tid) or live_gps_coords_fallback.get(fb_key))[0], 6) if (live_gps_coords.get(tid) or live_gps_coords_fallback.get(fb_key)) else None,
+                "bus_lon": round((live_gps_coords.get(tid) or live_gps_coords_fallback.get(fb_key))[1], 6) if (live_gps_coords.get(tid) or live_gps_coords_fallback.get(fb_key)) else None,
+                "mins_since_origin": max(0, int(round(mins_since_origin))),
                 "status": status,
                 "transfer_alert": transfer_alert,
                 "crowd": dict(tally),
@@ -1072,7 +1114,8 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             "updated_at": now.strftime("%H:%M:%S"),
             "warning": None,
             "trains": serializable_trains,
-            "buses": upcoming_buses[:40],
+            "buses": [{**b, "diagnostic": build_bus_diagnostic(b)} for b in upcoming_buses[:40]],
+            "stops": LOOKUP.get("stops", {}),
             "analytics": analytics,
             "stats": {
                 "active_gps_national": len(live_gps_trips),
@@ -1141,6 +1184,39 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       background: #0284c7; color: white; font-weight: 800; font-size: 0.95rem;
       padding: 4px 10px; border-radius: 8px; min-width: 52px; text-align: center;
     }
+    .map-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+      padding: 12px; margin-bottom: 14px;
+    }
+    .map-header {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+    }
+    .map-title { font-weight: 700; font-size: 0.92rem; }
+    .map-controls { display: flex; gap: 6px; align-items: center; }
+    .map-btn {
+      background: rgba(148,163,184,0.14); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 4px 9px; font-size: 0.74rem; font-weight: 600; cursor: pointer;
+    }
+    #commuteMap { height: 265px; width: 100%; border-radius: 10px; z-index: 1; background: #0b1220; }
+    .bus-pin {
+      color: #fff; font-weight: 800; font-size: 11px; padding: 3px 7px; border-radius: 999px;
+      border: 2px solid #0f172a; box-shadow: 0 2px 6px rgba(0,0,0,0.45); white-space: nowrap;
+      text-align: center;
+    }
+    .stop-pin {
+      background: #1e293b; color: #38bdf8; font-weight: 700; font-size: 10px;
+      padding: 2px 6px; border-radius: 6px; border: 1.5px solid #38bdf8; white-space: nowrap;
+    }
+    .diag-box {
+      margin-top: 8px; padding: 7px 10px; border-radius: 8px; font-size: 0.8rem; line-height: 1.35;
+      background: rgba(15,23,42,0.65); border-left: 3px solid #38bdf8; color: #e2e8f0;
+    }
+    .diag-box.diag-warn { border-left-color: var(--amber); background: rgba(245,158,11,0.10); }
+    .diag-box.diag-bad { border-left-color: var(--red); background: rgba(239,68,68,0.12); }
+    .bus-card.card-highlight {
+      border-color: #38bdf8 !important; box-shadow: 0 0 0 2px rgba(56,189,248,0.35);
+    }
     .bus-info { flex: 1; }
     .bus-head { font-weight: 600; font-size: 0.95rem; }
     .bus-stop { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
@@ -1188,6 +1264,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       border-radius: 999px; font-size: 0.82rem; display: none; z-index: 50;
     }
   </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
   <header>
@@ -1214,7 +1292,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="train-strip" id="trainsBox"></div>
 
     <div class="section-title">Live Buses & Crowd Ground-Truth Check</div>
-    <div id="busesBox"></div>
+          <div class="map-card" id="mapCard">
+        <div class="map-header">
+          <div>
+            <div class="map-title">Live Maynooth Telemetry Map <span id="mapLiveCount" style="font-size:0.76rem;color:var(--muted);font-weight:500"></span></div>
+          </div>
+          <div class="map-controls">
+            <button class="map-btn" type="button" onclick="resetMapView()">Center Maynooth</button>
+            <button class="map-btn" type="button" id="toggleMapBtn" onclick="toggleMapPanel()">Hide Map</button>
+          </div>
+        </div>
+        <div id="commuteMap"></div>
+      </div>
+      <div id="busesBox"></div>
   </div>
 
   <div id="analyticsView" style="display:none;"></div>
@@ -1474,7 +1564,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         const ghostDisabled = (isTerminating || userVote) ? 'disabled' : '';
 
         return `
-          <div class="bus-card">
+          <div class="bus-card" id="card-${b.trip_id}" onclick="focusBusOnMap('${b.trip_id}')">
             <div class="bus-top">
               <div class="route-badge">${b.route}</div>
               <div class="bus-info">
@@ -1486,7 +1576,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div class="tags">${statusBadge(b)}${flowBadge(b)}${histPill}</div>
             ${transferHtml}
             ${backupHtml}
-            <div class="verify-row">
+            ${b.diagnostic ? `<div class="diag-box ${['CANCELED','SILENT_GHOST_RISK','CROWD_CONFIRMED_GHOST','STALE_GPS','STALLED_GHOST'].includes(b.status) ? 'diag-bad' : (['HEAVY_DELAY','GPS_FAULT_VERIFIED'].includes(b.status) ? 'diag-warn' : '')}">?? <strong>Diagnostic:</strong> ${b.diagnostic}${(b.bus_lat !== null && b.bus_lon !== null) ? ` <span style="color:#38bdf8;font-weight:600;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();focusBusOnMap('${b.trip_id}', true)">[Locate on Map]</span>` : ''}</div>` : ''}
+            <div class="verify-row" onclick="event.stopPropagation()">
               <button class="btn btn-ok ${userVote === 'ARRIVED' ? 'btn-voted' : ''}" ${arrivedDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','ARRIVED')">
                 ✅ ${userVote === 'ARRIVED' ? 'Voted Arrived' : 'Bus Arrived'} (${b.crowd.ARRIVED})
@@ -1513,6 +1604,131 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     loadData();
     setInterval(loadData, 45000);
+  
+    let commuteMap = null;
+    let stopLayer = null;
+    let busLayer = null;
+    let busMarkersById = {};
+    let mapVisible = true;
+
+    function initCommuteMap() {
+      if (commuteMap || typeof L === 'undefined') return;
+      const el = document.getElementById('commuteMap');
+      if (!el) return;
+      commuteMap = L.map('commuteMap', { zoomControl: true }).setView([53.3812, -6.5935], 14);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '? OpenStreetMap contributors'
+      }).addTo(commuteMap);
+      stopLayer = L.layerGroup().addTo(commuteMap);
+      busLayer = L.layerGroup().addTo(commuteMap);
+    }
+
+    function resetMapView() {
+      initCommuteMap();
+      if (commuteMap) commuteMap.setView([53.3812, -6.5935], 14);
+    }
+
+    function toggleMapPanel() {
+      const el = document.getElementById('commuteMap');
+      const btn = document.getElementById('toggleMapBtn');
+      if (!el || !btn) return;
+      mapVisible = !mapVisible;
+      el.style.display = mapVisible ? 'block' : 'none';
+      btn.textContent = mapVisible ? 'Hide Map' : 'Show Map';
+      if (mapVisible && commuteMap) {
+        setTimeout(() => commuteMap.invalidateSize(), 120);
+      }
+    }
+
+    function focusBusOnMap(tripId, scrollToMap = false) {
+      document.querySelectorAll('.bus-card.card-highlight').forEach(c => c.classList.remove('card-highlight'));
+      const card = document.getElementById('card-' + tripId);
+      if (card) card.classList.add('card-highlight');
+
+      const marker = busMarkersById[tripId];
+      if (!marker || !commuteMap) return;
+      if (!mapVisible) toggleMapPanel();
+      if (scrollToMap) {
+        document.getElementById('mapCard')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      const ll = marker.getLatLng();
+      commuteMap.flyTo(ll, Math.max(commuteMap.getZoom(), 14), { duration: 0.6 });
+      marker.openPopup();
+    }
+
+    function updateCommuteMap(buses, stopsMap) {
+      initCommuteMap();
+      if (!commuteMap || !stopLayer || !busLayer) return;
+
+      stopLayer.clearLayers();
+      const entries = Object.entries(stopsMap || {});
+      if (entries.length > 0) {
+        entries.forEach(([sid, st]) => {
+          if (st.stop_lat == null || st.stop_lon == null) return;
+          const isStn = (st.stop_name || '').toLowerCase().includes('station');
+          const label = isStn ? 'Station' : 'Campus';
+          const icon = L.divIcon({
+            className: '',
+            html: `<div class="stop-pin">${label}</div>`,
+            iconSize: [52, 20],
+            iconAnchor: [26, 10]
+          });
+          L.marker([st.stop_lat, st.stop_lon], { icon })
+            .bindPopup(`<strong>${st.stop_name}</strong><br><span style="font-size:12px">Stop ID: ${sid}</span>`)
+            .addTo(stopLayer);
+        });
+      } else {
+        L.marker([53.3779, -6.5897]).bindPopup('<strong>Maynooth Station</strong>').addTo(stopLayer);
+        L.marker([53.3846, -6.6006]).bindPopup('<strong>Maynooth University Campus</strong>').addTo(stopLayer);
+      }
+
+      busLayer.clearLayers();
+      busMarkersById = {};
+      let plotted = 0;
+
+      (buses || []).forEach(b => {
+        if (b.bus_lat === null || b.bus_lat === undefined || b.bus_lon === null || b.bus_lon === undefined) return;
+        plotted += 1;
+        let bg = '#22c55e';
+        if (['CANCELED', 'SILENT_GHOST_RISK', 'CROWD_CONFIRMED_GHOST', 'STALE_GPS', 'STALLED_GHOST'].includes(b.status)) {
+          bg = '#ef4444';
+        } else if (b.status === 'HEAVY_DELAY' || (b.gps_eta_mins !== null && b.gps_eta_mins >= b.mins_away + 5)) {
+          bg = '#f59e0b';
+        }
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="bus-pin" style="background:${bg}">${b.route}</div>`,
+          iconSize: [44, 22],
+          iconAnchor: [22, 11]
+        });
+        const distLine = (b.distance_km !== null && b.distance_km !== undefined)
+          ? `<br><strong>Distance:</strong> ${b.distance_km} km to ${b.stop_name}`
+          : '';
+        const popupHtml = `
+          <div style="min-width:190px;font-size:12px;line-height:1.4">
+            <strong>Route ${b.route}</strong> ? ${b.headsign}${distLine}
+            <div style="margin-top:4px;color:#334155">${b.diagnostic || ''}</div>
+          </div>
+        `;
+        const marker = L.marker([b.bus_lat, b.bus_lon], { icon })
+          .bindPopup(popupHtml)
+          .on('click', () => {
+            document.querySelectorAll('.bus-card.card-highlight').forEach(c => c.classList.remove('card-highlight'));
+            const card = document.getElementById('card-' + b.trip_id);
+            if (card) {
+              card.classList.add('card-highlight');
+              card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          })
+          .addTo(busLayer);
+        busMarkersById[b.trip_id] = marker;
+      });
+
+      const countEl = document.getElementById('mapLiveCount');
+      if (countEl) countEl.textContent = `(${plotted} live GPS vehicles plotted)`;
+    }
+
   </script>
 </body>
 </html>
