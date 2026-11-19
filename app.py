@@ -537,6 +537,8 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 and delay_mins >= 2
                 and info["stop_id"] in STATION_BUS_STOP_IDS
                 and info.get("stop_role") != "ORIGIN"
+                and info.get("maynooth_flow") != "OUTBOUND"
+                and info.get("drop_off_type", "0") != "1"
                 and -2 <= (pred_arr_dt - now).total_seconds() / 60.0 <= 45
             ):
                 for tr in trains:
@@ -673,6 +675,8 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             if (
                 item["stop_id"] in STATION_BUS_STOP_IDS
                 and item.get("stop_role") != "ORIGIN"
+                and item.get("maynooth_flow") != "OUTBOUND"
+                and item.get("drop_off_type", "0") != "1"
                 and status not in ("CANCELED", "STALLED_GHOST")
             ):
                 for idx, tr in enumerate(trains):
@@ -717,6 +721,9 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
                 "stop_name": item["stop_name"],
                 "stop_zone": stop_zone,
                 "stop_role": item.get("stop_role", ""),
+                "maynooth_flow": item.get("maynooth_flow", "THROUGH"),
+                "pickup_type": item.get("pickup_type", "0"),
+                "drop_off_type": item.get("drop_off_type", "0"),
                 "sched_time": item["arrival_time"][:5],
                 "pred_time": pred_arr_dt.strftime("%H:%M"),
                 "mins_away": mins_away,
@@ -886,7 +893,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="warn-banner" id="warnBanner"></div>
 
   <div class="pill-bar">
-    <button class="pill active" onclick="setTab('all', this)">All Maynooth Stops</button>
+    <button class="pill active" onclick="setTab('all', this)">All Maynooth</button>
+    <button class="pill" onclick="setTab('outbound', this)">Outbound (Leaving)</button>
+    <button class="pill" onclick="setTab('inbound', this)">Inbound (To Maynooth)</button>
     <button class="pill" onclick="setTab('station', this)">Maynooth Station</button>
     <button class="pill" onclick="setTab('campus', this)">MU Campus</button>
     <button class="pill" onclick="setTab('analytics', this)">📊 Reliability Data</button>
@@ -986,6 +995,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         return `<span class="tag tag-live">GPS LIVE${d}</span>`;
       }
       return '<span class="tag tag-sched">SCHEDULED (NO PING YET)</span>';
+    }
+
+    function flowBadge(b) {
+      if (b.pickup_type === '1') return '<span class="tag tag-sched">INBOUND ? DROP-OFF ONLY</span>';
+      if (b.drop_off_type === '1') return '<span class="tag tag-hist">OUTBOUND ? PICK-UP ONLY</span>';
+      if (b.maynooth_flow === 'OUTBOUND') return '<span class="tag tag-hist">OUTBOUND ? LEAVING MAYNOOTH</span>';
+      if (b.maynooth_flow === 'INBOUND') return '<span class="tag tag-sched">INBOUND ? TO MAYNOOTH</span>';
+      return '<span class="tag tag-sched">THROUGH ROUTE</span>';
     }
 
     function formatRole(role) {
@@ -1095,7 +1112,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `).join('') || '<div class="sub">No departing trains in window.</div>';
 
       const voted = getVoted();
-      const buses = latestData.buses.filter(b => currentTab === 'all' || b.stop_zone === currentTab);
+      const buses = latestData.buses.filter(b => {
+        if (currentTab === 'all') return true;
+        if (currentTab === 'outbound') return b.maynooth_flow === 'OUTBOUND' || b.maynooth_flow === 'THROUGH';
+        if (currentTab === 'inbound') return b.maynooth_flow === 'INBOUND' || b.maynooth_flow === 'THROUGH';
+        return b.stop_zone === currentTab;
+      });
       const busesBox = document.getElementById('busesBox');
 
       busesBox.innerHTML = buses.map(b => {
@@ -1131,7 +1153,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               </div>
               <div class="eta">${etaHtml}</div>
             </div>
-            <div class="tags">${statusBadge(b)}${histPill}</div>
+            <div class="tags">${statusBadge(b)}${flowBadge(b)}${histPill}</div>
             ${transferHtml}
             ${backupHtml}
             <div class="verify-row">

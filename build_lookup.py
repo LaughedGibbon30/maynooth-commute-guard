@@ -27,15 +27,18 @@ KNOWN_MAYNOOTH_STOPS = {
 
 CORE_RT_OPERATORS = (
     "dublin bus",
-    "bus ?tha cliath",
+    "bus \u00e1tha cliath",
     "bus atha cliath",
     "go-ahead",
-    "bus ?ireann",
+    "bus \u00e9ireann",
     "bus eireann",
 )
+UNTRACKED_ROUTE_CODES = {"22"}
 
 
-def is_core_rt_operator(agency_name: str) -> bool:
+def is_core_rt_operator(agency_name: str, route_short_name: str = "") -> bool:
+    if route_short_name.strip().upper() in UNTRACKED_ROUTE_CODES:
+        return False
     low = agency_name.strip().lower()
     return any(tok in low for tok in CORE_RT_OPERATORS)
 
@@ -163,12 +166,16 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
             rid = row.get("route_id", "").strip()
             if rid in needed_route_ids:
                 aid = row.get("agency_id", "").strip()
+                rtype = row.get("route_type", "3").strip()
+                short_name = row.get("route_short_name", "").strip() or row.get("route_long_name", "").strip()
+                if rtype == "2" or aid == "IR" or short_name.lower() == "rail":
+                    continue
                 aname = agencies.get(aid, "")
                 routes_meta[rid] = {
-                    "route_short_name": row.get("route_short_name", "").strip() or row.get("route_long_name", "").strip(),
+                    "route_short_name": short_name,
                     "agency_id": aid,
                     "agency_name": aname,
-                    "gtfs_rt_expected": is_core_rt_operator(aname),
+                    "gtfs_rt_expected": is_core_rt_operator(aname, short_name),
                 }
 
         calendar: dict[str, dict] = {}
@@ -239,7 +246,9 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
         tmeta = trips_meta.get(tid)
         if not tmeta:
             continue
-        rmeta = routes_meta.get(tmeta["route_id"], {})
+        rmeta = routes_meta.get(tmeta["route_id"])
+        if not rmeta:
+            continue
         bounds = trip_bounds[tid]
         seq = item["stop_sequence"]
 
@@ -249,6 +258,18 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
             role = "TERMINUS"
         else:
             role = "THROUGH"
+
+        pickup_type = item["pickup_type"] or "0"
+        drop_off_type = item["drop_off_type"] or "0"
+        seq_span = max(1, bounds["max_seq"] - bounds["min_seq"])
+        rel_pos = (seq - bounds["min_seq"]) / seq_span
+
+        if role == "ORIGIN" or drop_off_type == "1" or rel_pos <= 0.25:
+            maynooth_flow = "OUTBOUND"
+        elif role == "TERMINUS" or pickup_type == "1" or rel_pos >= 0.75:
+            maynooth_flow = "INBOUND"
+        else:
+            maynooth_flow = "THROUGH"
 
         smeta = maynooth_stops[item["stop_id"]]
         stop_times_out.append({
@@ -265,8 +286,9 @@ def build_from_zip_path(zip_path: Path, output_path: Path = LOOKUP_FILE) -> dict
             "stop_name": smeta["stop_name"],
             "stop_sequence": seq,
             "stop_role": role,
-            "pickup_type": item["pickup_type"],
-            "drop_off_type": item["drop_off_type"],
+            "maynooth_flow": maynooth_flow,
+            "pickup_type": pickup_type,
+            "drop_off_type": drop_off_type,
             "arrival_time": item["arrival_time"],
             "departure_time": item["departure_time"],
             "origin_departure_time": bounds["origin_dep"],
