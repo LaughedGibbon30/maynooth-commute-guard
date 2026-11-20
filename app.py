@@ -1152,7 +1152,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <style>
     :root {
       --bg: #0f172a; --card: #1e293b; --border: #334155;
-      --text: #f8fafc; --muted: #94a3b8;
+      --text: #f8fafc; --muted: #a8b8cd;
       --green: #22c55e; --amber: #f59e0b; --red: #ef4444; --blue: #38bdf8;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
@@ -1469,6 +1469,126 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       color: #94a3b8 !important;
       padding: 4px 5px 0 0 !important;
     }
+      .brand-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+    .brand-title {
+      font-size: 1.22rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #f8fafc;
+      line-height: 1.2;
+    }
+    .brand-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+    .brand-badge {
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: rgba(56, 189, 248, 0.16);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #7dd3fc;
+      white-space: nowrap;
+      text-transform: uppercase;
+    }
+    .impact-strip {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      margin-bottom: 12px;
+      border-radius: 10px;
+      background: rgba(30, 41, 59, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      font-size: 0.76rem;
+      color: #cbd5e1;
+    }
+    .how-details {
+      margin-bottom: 12px;
+      font-size: 0.77rem;
+      color: var(--muted);
+    }
+    .how-details summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: #93c5fd;
+      user-select: none;
+    }
+    .how-body {
+      margin-top: 6px;
+      padding: 9px 11px;
+      border-radius: 9px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      line-height: 1.45;
+      color: #cbd5e1;
+    }
+    .rel-strip {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      margin-bottom: 12px;
+      scrollbar-width: none;
+    }
+    .rel-strip::-webkit-scrollbar { display: none; }
+    .rel-chip {
+      flex: 0 0 auto;
+      padding: 6px 10px;
+      border-radius: 9px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      font-size: 0.75rem;
+      line-height: 1.3;
+    }
+    .rel-good { color: #86efac; font-weight: 700; }
+    .rel-mid { color: #fcd34d; font-weight: 700; }
+    .rel-bad { color: #fca5a5; font-weight: 700; }
+    .route-rel-inline {
+      display: inline-block;
+      margin-left: 6px;
+      font-size: 0.73rem;
+      font-weight: 700;
+    }
+    .crowd-proof {
+      margin-top: 8px;
+      font-size: 0.75rem;
+      color: #cbd5e1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+    }
+    .verify-row .btn {
+      min-height: 42px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      transition: transform 0.14s ease, background-color 0.14s ease;
+    }
+    .verify-row .btn:active:not(:disabled) {
+      transform: scale(0.97);
+    }
+    @keyframes btnPulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.03); }
+      100% { transform: scale(1); }
+    }
+    .btn-pop {
+      animation: btnPulse 0.28s ease;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1487,7 +1607,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div class="warn-banner" id="warnBanner"></div>
 
-  <div class="pill-bar">
+  <div class="brand-bar">
+        <div>
+          <div class="brand-title">Maynooth Connection Guard</div>
+          <div class="brand-sub">Live ghost-bus detection & Maynooth Station rail transfer protection</div>
+        </div>
+        <span class="brand-badge">NTA Smarter Travel</span>
+      </div>
+      <div class="impact-strip" id="impactStrip">
+        <span>Loading cumulative reliability baseline...</span>
+      </div>
+      <details class="how-details">
+        <summary>How Connection Guard works</summary>
+        <div class="how-body">
+          Cross-checks TFI GTFS-Realtime vehicle GPS coordinates and trip updates against Irish Rail Maynooth departures every 45 seconds. Flags unannounced silent ghosts, calculates real bus-to-train transfer buffers, and logs curb-side commuter verifications.
+        </div>
+      </details>
+      <div class="pill-bar">
     <button class="pill active" onclick="setTab('all', this)">All Maynooth</button>
     <button class="pill" onclick="setTab('outbound', this)">Outbound (Leaving)</button>
     <button class="pill" onclick="setTab('inbound', this)">Inbound (To Maynooth)</button>
@@ -1530,6 +1666,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div id="commuteMap"></div>
         <div class="map-status-strip" id="mapStatusStrip"></div>
       </div>
+      <div class="rel-strip" id="routeReliabilityStrip"></div>
       <div id="busesBox"></div>
   </div>
 
@@ -1581,7 +1718,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           })
         });
         if (res.ok) {
-          voted[vKey] = verdict;
+          const nowObj = new Date();
+          const hh = String(nowObj.getHours()).padStart(2, '0');
+          const mm = String(nowObj.getMinutes()).padStart(2, '0');
+          voted[vKey] = { verdict: verdict, time: `${hh}:${mm}` };
           try { localStorage.setItem(VOTED_KEY, JSON.stringify(voted)); } catch (e) {}
           const out = await res.json();
           if (latestData && latestData.buses) {
@@ -1858,6 +1998,52 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `;
     }
 
+    function getRouteReliabilityMap() {
+      const map = {};
+      const routes = (latestData && latestData.analytics && latestData.analytics.routes) ? latestData.analytics.routes : [];
+      routes.forEach(r => {
+        const evalCount = Number(r.evaluated || 0);
+        const ghostRate = Number(r.ghost_rate_pct || 0);
+        const relPct = Math.max(0, Math.min(100, Math.round(100 - ghostRate)));
+        map[r.route] = {
+          relPct: relPct,
+          evaluated: evalCount,
+          ghosts: Number(r.ghosts || 0),
+          delays: Number(r.delays || 0)
+        };
+      });
+      return map;
+    }
+
+    function renderImpactAndReliability() {
+      const impactEl = document.getElementById('impactStrip');
+      const stripEl = document.getElementById('routeReliabilityStrip');
+      if (!latestData || !latestData.analytics) return;
+
+      const t = latestData.analytics.totals || {};
+      const totalGhosts = Number(t.silent_ghosts || 0) + Number(t.official_canceled || 0);
+      if (impactEl) {
+        impactEl.innerHTML = `
+          <span><strong>${t.total_evaluated || 0}</strong> trips monitored ? <strong>${totalGhosts}</strong> ghost/canceled buses caught</span>
+          <span style="color:#86efac;font-weight:700">${t.crowd_total || 0} student verifications</span>
+        `;
+      }
+
+      if (stripEl) {
+        const routes = (latestData.analytics.routes || []).filter(r => Number(r.evaluated || 0) >= 3).slice(0, 6);
+        if (routes.length === 0) {
+          stripEl.style.display = 'none';
+        } else {
+          stripEl.style.display = 'flex';
+          stripEl.innerHTML = routes.map(r => {
+            const relPct = Math.max(0, Math.min(100, Math.round(100 - Number(r.ghost_rate_pct || 0))));
+            const cls = relPct >= 85 ? 'rel-good' : (relPct >= 70 ? 'rel-mid' : 'rel-bad');
+            return `<div class="rel-chip"><strong>Route ${r.route}</strong>: <span class="${cls}">${relPct}% reliable</span> <span style="color:var(--muted)">(${r.evaluated} trips)</span></div>`;
+          }).join('');
+        }
+      }
+    }
+
     function render() {
       if (!latestData) return;
       document.getElementById('statusLine').textContent =
@@ -1881,6 +2067,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       document.getElementById('liveView').style.display = 'block';
       document.getElementById('analyticsView').style.display = 'none';
 
+      renderImpactAndReliability();
       renderHeroBanner();
       const trainsBox = document.getElementById('trainsBox');
       trainsBox.innerHTML = latestData.trains.map((tr, idx) => `
@@ -1947,10 +2134,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           ? `${b.history.ghosts} logged ghosts, ${b.history.delays} delays`
           : 'No prior disruptions logged';
 
+        const relMap = getRouteReliabilityMap();
+        const rStats = relMap[b.route];
+        const relInlineHtml = (rStats && rStats.evaluated >= 3)
+          ? `<span class="route-rel-inline ${rStats.relPct >= 85 ? 'rel-good' : (rStats.relPct >= 70 ? 'rel-mid' : 'rel-bad')}">? ${rStats.relPct}% reliable</span>`
+          : '';
+
         const vKey = `${b.service_date}|${b.trip_id}`;
-        const userVote = voted[vKey];
+        const rawVote = voted[vKey];
+        const userVote = rawVote ? (typeof rawVote === 'string' ? rawVote : rawVote.verdict) : null;
+        const voteTime = (rawVote && typeof rawVote === 'object' && rawVote.time) ? rawVote.time : null;
         const arrivedDisabled = (isCanceled || userVote) ? 'disabled' : '';
         const ghostDisabled = (isTerminating || userVote) ? 'disabled' : '';
+
+        let crowdSummary = 'Help verify curb-side arrival';
+        if (b.crowd.ARRIVED > 0) {
+          const unit = b.crowd.ARRIVED === 1 ? 'student' : 'students';
+          crowdSummary = `${b.crowd.ARRIVED} ${unit} confirmed bus arrived${voteTime && userVote === 'ARRIVED' ? ` (you at ${voteTime})` : ''}`;
+        } else if (b.crowd.GHOST > 0) {
+          const unit = b.crowd.GHOST === 1 ? 'student' : 'students';
+          crowdSummary = `${b.crowd.GHOST} ${unit} reported ghost bus${voteTime && userVote === 'GHOST' ? ` (you at ${voteTime})` : ''}`;
+        }
 
         return `
           <div class="bus-card ${isTerminating ? 'bus-terminating' : ''}" id="card-${b.trip_id}" onclick="focusBusOnMap('${b.trip_id}', false, ${b.bus_lat ?? 'null'}, ${b.bus_lon ?? 'null'})">
@@ -1958,7 +2162,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <div class="route-badge">${b.route}</div>
               <div class="bus-info">
                 <div class="bus-head">${b.headsign || 'Maynooth Service'}</div>
-                <div class="bus-stop">${b.stop_name} ? <strong>${b.operator}</strong></div>
+                <div class="bus-stop">${b.stop_name} ? <strong>${b.operator}</strong>${relInlineHtml}</div>
               </div>
               <div class="eta">${etaHtml}</div>
             </div>
@@ -1975,12 +2179,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
                 <div><strong>Route History:</strong> ${histInfo}</div>
               </div>
             </details>
+            <div class="crowd-proof"><span>${crowdSummary}</span><span>Live Stop Check</span></div>
             <div class="verify-row" onclick="event.stopPropagation()">
-              <button class="btn btn-ok ${userVote === 'ARRIVED' ? 'btn-voted' : ''}" ${arrivedDisabled}
+              <button class="btn btn-ok ${userVote === 'ARRIVED' ? 'btn-voted btn-pop' : ''}" ${arrivedDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','ARRIVED')">
                 ${userVote === 'ARRIVED' ? 'Voted Arrived' : 'Bus Arrived'} (${b.crowd.ARRIVED})
               </button>
-              <button class="btn btn-bad ${userVote === 'GHOST' ? 'btn-voted' : ''}" ${ghostDisabled}
+              <button class="btn btn-bad ${userVote === 'GHOST' ? 'btn-voted btn-pop' : ''}" ${ghostDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','GHOST')">
                 ${userVote === 'GHOST' ? 'Voted Ghost' : 'Ghost Bus'} (${b.crowd.GHOST})
               </button>
