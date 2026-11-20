@@ -556,7 +556,7 @@ def get_active_service_ids(service_date: datetime) -> set[str]:
 
 def fetch_gtfs_rt(url: str) -> gtfs_realtime_pb2.FeedMessage:
     headers = {"x-api-key": NTA_API_KEY, "Cache-Control": "no-cache"}
-    resp = HTTP.get(url, headers=headers, timeout=(8, 20))
+    resp = HTTP.get(url, headers=headers, timeout=(4, 9))
     resp.raise_for_status()
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(resp.content)
@@ -564,7 +564,7 @@ def fetch_gtfs_rt(url: str) -> gtfs_realtime_pb2.FeedMessage:
 
 
 def fetch_trains(now: datetime) -> list[dict]:
-    resp = HTTP.get(IRISH_RAIL_URL, timeout=(8, 15))
+    resp = HTTP.get(IRISH_RAIL_URL, timeout=(4, 8))
     resp.raise_for_status()
     root = ET.fromstring(resp.text)
     ns = {"ir": "http://api.irishrail.ie/realtime/"}
@@ -600,7 +600,17 @@ def fetch_trains(now: datetime) -> list[dict]:
 
 
 def get_live_snapshot(force_refresh: bool = False) -> dict:
-    with CACHE_LOCK:
+    now_ts = time.time()
+    if not force_refresh and CACHE["payload"] and (now_ts - CACHE["timestamp"] < CACHE_TTL_SECONDS):
+        return CACHE["payload"]
+
+    acquired = CACHE_LOCK.acquire(blocking=False)
+    if not acquired:
+        if CACHE["payload"]:
+            return CACHE["payload"]
+        CACHE_LOCK.acquire()
+
+    try:
         now_ts = time.time()
         if not force_refresh and CACHE["payload"] and (now_ts - CACHE["timestamp"] < CACHE_TTL_SECONDS):
             return CACHE["payload"]
@@ -975,6 +985,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             fb_key = (item["route_id"], item["origin_departure_time"])
             tu_info = trip_updates.get(tid) or trip_updates_fallback.get(fb_key)
             has_gps = (tid in live_gps_trips) or (fb_key in live_gps_fallback)
+            is_stale_gps = ((tid in stale_gps_trips) or (fb_key in stale_gps_fallback)) and not has_gps
             bus_coords = live_gps_coords.get(tid) or live_gps_coords_fallback.get(fb_key)
             stop_meta = LOOKUP.get("stops", {}).get(item["stop_id"], {})
             s_lat = stop_meta.get("stop_lat")
@@ -1130,6 +1141,9 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         del vp_feed, tu_feed
         gc.collect()
         return result
+    finally:
+        if CACHE_LOCK.locked():
+            CACHE_LOCK.release()
 
 
 def background_logger_worker():
