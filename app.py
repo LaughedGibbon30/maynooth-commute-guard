@@ -1146,6 +1146,7 @@ def background_logger_worker():
 HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230284c7'/><text x='16' y='22' font-size='16' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'>CG</text></svg>">
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Maynooth Connection Guard</title>
@@ -1603,22 +1604,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>Maynooth Connection Guard</h1>
-      <div class="sub" id="statusLine">Loading live NTA & Irish Rail feeds...</div>
-    </div>
-    <button class="pill" onclick="loadData()">Refresh</button>
-  </header>
-
-  <div class="warn-banner" id="warnBanner"></div>
-
-  <div class="brand-bar">
+      <div class="brand-bar">
         <div>
           <div class="brand-title">Maynooth Connection Guard</div>
-          <div class="brand-sub">Live ghost-bus detection & Maynooth Station rail transfer protection</div>
+          <div class="brand-sub">Live ghost-bus detection ? Maynooth Station rail transfer protection</div>
+          <div class="sub" id="statusLine" style="margin-top:4px">Connecting to live TFI & Irish Rail feeds...</div>
         </div>
-        <span class="brand-badge">NTA Smarter Travel</span>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+          <span class="brand-badge">NTA Smarter Travel</span>
+          <button class="refresh-btn" type="button" onclick="loadData()">Refresh</button>
+        </div>
       </div>
       <div class="impact-strip" id="impactStrip">
         <span>Loading cumulative reliability baseline...</span>

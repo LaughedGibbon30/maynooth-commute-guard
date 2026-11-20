@@ -3,3 +3,4 @@
 gtfs_static/
 __pycache__/
 *.pyc
+qa_screenshots/
