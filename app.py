@@ -1538,6 +1538,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         return b.stop_zone === currentTab;
       });
       const busesBox = document.getElementById('busesBox');
+      try {
+        updateCommuteMap(buses, (latestData && latestData.stops) ? latestData.stops : {});
+      } catch (mapErr) {
+        console.error('Map render error:', mapErr);
+      }
 
       busesBox.innerHTML = buses.map(b => {
         const isCanceled = b.status === 'CANCELED';
@@ -1654,20 +1659,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         if (mapCard) mapCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
 
-      commuteMap.invalidateSize();
-      const marker = busMarkersById[tripId];
-      if (marker) {
-        const ll = marker.getLatLng();
-        commuteMap.setView(ll, Math.max(commuteMap.getZoom(), 14), { animate: true });
-        setTimeout(() => marker.openPopup(), 250);
-        return;
-      }
+      const panAndOpen = () => {
+        commuteMap.invalidateSize();
+        const marker = busMarkersById[tripId];
+        if (marker) {
+          const ll = marker.getLatLng();
+          commuteMap.setView(ll, 15, { animate: false });
+          marker.openPopup();
+          return;
+        }
+        const lat = Number(fallbackLat);
+        const lon = Number(fallbackLon);
+        if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)) {
+          commuteMap.setView([lat, lon], 15, { animate: false });
+        }
+      };
 
-      const lat = Number(fallbackLat);
-      const lon = Number(fallbackLon);
-      if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)) {
-        commuteMap.setView([lat, lon], 14, { animate: true });
-      }
+      setTimeout(panAndOpen, scrollToMap ? 320 : 40);
     }
 
     function updateCommuteMap(buses, stopsMap) {
