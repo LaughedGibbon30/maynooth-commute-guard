@@ -1342,6 +1342,69 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .pill-bar::-webkit-scrollbar {
       display: none;
     }
+      .train-card.train-primary {
+      border-color: rgba(56, 189, 248, 0.55);
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(30, 41, 59, 0.95));
+    }
+    .train-card.train-secondary {
+      opacity: 0.80;
+    }
+    .train-tag {
+      display: inline-block;
+      font-size: 0.65rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      color: #7dd3fc;
+      text-transform: uppercase;
+      margin-bottom: 3px;
+    }
+    .tag-risk-low { background: rgba(34, 197, 94, 0.14); color: #86efac; }
+    .tag-risk-med { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+    .tag-risk-high { background: rgba(239, 68, 68, 0.22); color: #fca5a5; }
+    .tfi-compare {
+      margin-top: 7px;
+      padding: 5px 9px;
+      border-radius: 7px;
+      font-size: 0.76rem;
+      background: rgba(148, 163, 184, 0.10);
+      color: #cbd5e1;
+    }
+    .card-details {
+      margin-top: 8px;
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+    .card-details summary {
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      color: #94a3b8;
+      padding: 2px 0;
+    }
+    .card-details summary:hover {
+      color: #e2e8f0;
+    }
+    .card-details-body {
+      margin-top: 6px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      line-height: 1.45;
+      color: #cbd5e1;
+    }
+    .bus-card.bus-terminating {
+      opacity: 0.62;
+      border-style: dashed;
+    }
+    .term-divider {
+      margin: 18px 0 10px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1501,6 +1564,36 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (role === 'TERMINUS') return '<span class="role-note">• Arriving Only (Terminates Here)</span>';
       if (role === 'ORIGIN') return '• Starts Here';
       return '• Through Stop';
+    }
+
+    function ghostRiskBadge(b) {
+      const highStatuses = ['CANCELED', 'SILENT_GHOST_RISK', 'CROWD_CONFIRMED_GHOST', 'STALE_GPS', 'STALLED_GHOST'];
+      if (highStatuses.includes(b.status) || (b.crowd && b.crowd.GHOST > 0)) {
+        return '<span class="tag tag-risk-high">Ghost Risk: High</span>';
+      }
+      const histGhosts = (b.history && b.history.ghosts) ? b.history.ghosts : 0;
+      const delayMins = Number(b.delay_mins || 0);
+      if (b.status === 'HEAVY_DELAY' || delayMins >= 7 || histGhosts >= 5 || !b.has_gps) {
+        return '<span class="tag tag-risk-med">Ghost Risk: Medium</span>';
+      }
+      return '<span class="tag tag-risk-low">Ghost Risk: Low</span>';
+    }
+
+    function buildTfiComparison(b) {
+      const highStatuses = ['CANCELED', 'SILENT_GHOST_RISK', 'CROWD_CONFIRMED_GHOST', 'STALE_GPS', 'STALLED_GHOST'];
+      const delayMins = Math.round(Number(b.delay_mins || 0));
+      if (b.status === 'CANCELED') {
+        return `<div class="tfi-compare"><strong>TFI Timetable:</strong> ${b.sched_time} ? <strong>Guard:</strong> Officially canceled in live feed</div>`;
+      }
+      if (highStatuses.includes(b.status)) {
+        const tfiClaim = b.mins_away <= 1 ? 'Due' : `${b.sched_time}`;
+        return `<div class="tfi-compare"><strong>TFI Shows:</strong> ${tfiClaim} ? <strong>Guard:</strong> High ghost risk (no active GPS ping)</div>`;
+      }
+      if (delayMins >= 3) {
+        const tfiClaim = b.mins_away <= 1 ? 'Due' : `Sched ${b.sched_time}`;
+        return `<div class="tfi-compare"><strong>TFI Shows:</strong> ${tfiClaim} ? <strong>Guard:</strong> Running +${delayMins} min late (Pred ${b.pred_time})</div>`;
+      }
+      return '';
     }
 
     function renderAnalytics() {
@@ -1716,43 +1809,55 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
       renderHeroBanner();
       const trainsBox = document.getElementById('trainsBox');
-      trainsBox.innerHTML = latestData.trains.map(tr => `
-        <div class="train-card">
+      trainsBox.innerHTML = latestData.trains.map((tr, idx) => `
+        <div class="train-card ${idx === 0 ? 'train-primary' : 'train-secondary'}">
+          ${idx === 0 ? '<div class="train-tag">Next Departure</div>' : ''}
           <div class="train-dest">To ${tr.destination}</div>
-          <div class="train-meta">Dep ${tr.exp_depart} • Due in <strong>${tr.due_in}m</strong> ${tr.late_mins > 0 ? `(+${tr.late_mins}m late)` : ''}</div>
+          <div class="train-meta">Dep ${tr.exp_depart} ? Due in <strong>${tr.due_in}m</strong> ${tr.late_mins > 0 ? `(+${tr.late_mins}m late)` : ''}</div>
         </div>
       `).join('') || '<div class="sub">No departing trains in window.</div>';
 
       const voted = getVoted();
       const seenTripsAll = new Set();
-      const buses = latestData.buses.filter(b => {
+      const filteredBuses = latestData.buses.filter(b => {
         if (currentTab === 'all') {
-          const tripKey = `${b.service_date}|${b.trip_id}`;
-          if (seenTripsAll.has(tripKey)) return false;
-          seenTripsAll.add(tripKey);
+          const tKey = `${b.service_date}|${b.trip_id}`;
+          if (seenTripsAll.has(tKey)) return false;
+          seenTripsAll.add(tKey);
           return true;
         }
         if (currentTab === 'outbound') return b.maynooth_flow === 'OUTBOUND' || b.maynooth_flow === 'THROUGH';
         if (currentTab === 'inbound') return b.maynooth_flow === 'INBOUND' || b.maynooth_flow === 'THROUGH';
         return b.stop_zone === currentTab;
       });
+
       const busesBox = document.getElementById('busesBox');
       try {
-        updateCommuteMap(buses, (latestData && latestData.stops) ? latestData.stops : {});
+        updateCommuteMap(filteredBuses, (latestData && latestData.stops) ? latestData.stops : {});
       } catch (mapErr) {
         console.error('Map render error:', mapErr);
       }
 
-      busesBox.innerHTML = buses.map(b => {
-        const isCanceled = b.status === 'CANCELED';
-        const isTerminating = (b.stop_role === 'TERMINUS' || b.pickup_type === '1');
-        const etaHtml = isCanceled
-          ? `<div class="eta-mins" style="color:var(--red)">Canceled</div><div class="eta-clock" style="text-decoration:line-through">Sched ${b.sched_time}</div>`
-          : `<div class="eta-mins">${b.mins_away <= 0 ? 'Due' : b.mins_away + ' min'}</div><div class="eta-clock">Pred ${b.pred_time} (Sched ${b.sched_time})</div>`;
+      const boardableBuses = filteredBuses.filter(b => !(b.stop_role === 'TERMINUS' || b.pickup_type === '1'));
+      const terminatingBuses = filteredBuses.filter(b => (b.stop_role === 'TERMINUS' || b.pickup_type === '1'));
 
-        const histPill = (b.history && (b.history.ghosts > 0 || b.history.delays > 0))
-          ? `<span class="tag tag-hist">Logged: ${b.history.ghosts} ghost • ${b.history.delays} delay</span>`
-          : '';
+      const renderBusCard = (b, isTerminating) => {
+        const isCanceled = b.status === 'CANCELED';
+        const delayRounded = Math.round(Number(b.delay_mins || 0));
+
+        let etaHtml = '';
+        if (isCanceled) {
+          etaHtml = `<div class="eta-mins" style="color:var(--red)">Canceled</div><div class="eta-clock" style="text-decoration:line-through">Sched ${b.sched_time}</div>`;
+        } else if (isTerminating) {
+          etaHtml = `<div class="eta-mins" style="color:var(--muted)">Arriving</div><div class="eta-clock">Pred ${b.pred_time} (Sched ${b.sched_time})</div>`;
+        } else if (delayRounded >= 2) {
+          const delayColor = delayRounded >= 8 ? 'var(--red)' : 'var(--amber)';
+          const minsTxt = b.mins_away <= 0 ? 'Due' : `${b.mins_away}m`;
+          etaHtml = `<div class="eta-mins" style="color:${delayColor}">+${delayRounded} min</div><div class="eta-clock">Pred ${b.pred_time} (${minsTxt}) ? Sched ${b.sched_time}</div>`;
+        } else {
+          const minsTxt = b.mins_away <= 0 ? 'Due now' : `in ${b.mins_away} min`;
+          etaHtml = `<div class="eta-mins">Pred ${b.pred_time}</div><div class="eta-clock">${minsTxt} ? Sched ${b.sched_time}</div>`;
+        }
 
         const transferHtml = b.transfer_alert
           ? `<div class="transfer-box"><strong>Tight Train Transfer:</strong> ${b.transfer_alert.buffer_mins} min margin for ${b.transfer_alert.train_dep} train to ${b.transfer_alert.train_dest}${b.transfer_alert.backup_train ? `<br><em>${b.transfer_alert.backup_train}</em>` : ''}</div>`
@@ -1762,25 +1867,40 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           ? `<div class="backup-box"><strong>Backup Option:</strong> ${b.backup_bus}</div>`
           : '';
 
+        const compareHtml = buildTfiComparison(b);
+        const distInfo = (b.distance_km !== null && b.distance_km !== undefined) ? `${b.distance_km} km from stop` : 'Distance unavailable';
+        const histInfo = (b.history && (b.history.ghosts > 0 || b.history.delays > 0))
+          ? `${b.history.ghosts} logged ghosts, ${b.history.delays} delays`
+          : 'No prior disruptions logged';
+
         const vKey = `${b.service_date}|${b.trip_id}`;
         const userVote = voted[vKey];
         const arrivedDisabled = (isCanceled || userVote) ? 'disabled' : '';
         const ghostDisabled = (isTerminating || userVote) ? 'disabled' : '';
 
         return `
-          <div class="bus-card" id="card-${b.trip_id}" onclick="focusBusOnMap('${b.trip_id}', false, ${b.bus_lat ?? 'null'}, ${b.bus_lon ?? 'null'})">
+          <div class="bus-card ${isTerminating ? 'bus-terminating' : ''}" id="card-${b.trip_id}" onclick="focusBusOnMap('${b.trip_id}', false, ${b.bus_lat ?? 'null'}, ${b.bus_lon ?? 'null'})">
             <div class="bus-top">
               <div class="route-badge">${b.route}</div>
               <div class="bus-info">
                 <div class="bus-head">${b.headsign || 'Maynooth Service'}</div>
-                <div class="bus-stop">${b.stop_name} ${formatRole(b.stop_role)} ? <strong>${b.operator}</strong></div>
+                <div class="bus-stop">${b.stop_name} ? <strong>${b.operator}</strong></div>
               </div>
               <div class="eta">${etaHtml}</div>
             </div>
-            <div class="tags">${statusBadge(b)}${flowBadge(b)}${histPill}</div>
+            <div class="tags">${statusBadge(b)}${ghostRiskBadge(b)}</div>
+            ${compareHtml}
             ${transferHtml}
             ${backupHtml}
             ${b.diagnostic ? `<div class="diag-box ${['CANCELED','SILENT_GHOST_RISK','CROWD_CONFIRMED_GHOST','STALE_GPS','STALLED_GHOST'].includes(b.status) ? 'diag-bad' : (['HEAVY_DELAY','GPS_FAULT_VERIFIED'].includes(b.status) ? 'diag-warn' : '')}"><strong>Diagnostic:</strong> ${b.diagnostic}${(b.bus_lat !== null && b.bus_lon !== null) ? ` <span style="color:#38bdf8;font-weight:600;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();focusBusOnMap('${b.trip_id}', true, ${b.bus_lat ?? 'null'}, ${b.bus_lon ?? 'null'})">[Locate on Map]</span>` : ''}</div>` : ''}
+            <details class="card-details" onclick="event.stopPropagation()">
+              <summary>Telemetry & historical details</summary>
+              <div class="card-details-body">
+                <div><strong>Direction:</strong> ${b.maynooth_flow || 'THROUGH'} (${isTerminating ? 'Drop-off / Terminates here' : 'Boarding stop'})</div>
+                <div><strong>Live Telemetry:</strong> ${distInfo} ? Scheduled ${b.sched_time}</div>
+                <div><strong>Route History:</strong> ${histInfo}</div>
+              </div>
+            </details>
             <div class="verify-row" onclick="event.stopPropagation()">
               <button class="btn btn-ok ${userVote === 'ARRIVED' ? 'btn-voted' : ''}" ${arrivedDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','ARRIVED')">
@@ -1793,7 +1913,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             </div>
           </div>
         `;
-      }).join('') || '<div class="sub">No buses scheduled in the next 75 minutes for this filter.</div>';
+      };
+
+      let finalHtml = boardableBuses.map(b => renderBusCard(b, false)).join('');
+      if (!finalHtml) {
+        finalHtml = '<div class="sub">No boardable buses scheduled in the next 75 minutes for this filter.</div>';
+      }
+      if (terminatingBuses.length > 0) {
+        finalHtml += `<div class="term-divider">Arriving Only ? Terminates Here (Cannot Board)</div>`;
+        finalHtml += terminatingBuses.map(b => renderBusCard(b, true)).join('');
+      }
+      busesBox.innerHTML = finalHtml;
     }
 
     async function loadData() {
