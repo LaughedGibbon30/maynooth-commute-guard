@@ -1320,6 +1320,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       line-height: 1.4;
       color: #f8fafc;
     }
+      * {
+      scrollbar-width: thin;
+      scrollbar-color: #334155 #0b1220;
+    }
+    *::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    *::-webkit-scrollbar-track {
+      background: #0b1220;
+    }
+    *::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 999px;
+    }
+    .pill-bar {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .pill-bar::-webkit-scrollbar {
+      display: none;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
