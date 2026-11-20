@@ -1596,6 +1596,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       align-items: center;
       justify-content: center;
     }
+      .refresh-btn {
+      background: rgba(30, 41, 59, 0.92);
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 9px;
+      padding: 6px 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .refresh-btn:hover {
+      border-color: #38bdf8;
+      color: #f8fafc;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2223,6 +2241,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
+    if (typeof syncMapVisibilityUI === 'function') syncMapVisibilityUI();
     loadData();
     setInterval(loadData, 45000);
   
