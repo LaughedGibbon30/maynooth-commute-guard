@@ -1589,6 +1589,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .btn-pop {
       animation: btnPulse 0.28s ease;
     }
+      .pill, .refresh-btn, .map-btn {
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1813,9 +1819,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function renderAnalytics() {
       const a = latestData.analytics;
       const t = a.totals;
-      const maxRouteTotal = a.routes.length ? Math.max(...a.routes.map(r => r.total)) : 1;
+      const totalEval = Math.max(1, Number(t.total_evaluated || 0));
+      const uniqueGhostCancel = Number(t.silent_ghosts || 0) + Number(t.official_canceled || 0);
+      const trueGhostRatePct = t.total_evaluated ? ((uniqueGhostCancel / totalEval) * 100).toFixed(1) : '0.0';
+      const busRoutesOnly = (a.routes || []).filter(r => String(r.route || '').toLowerCase() !== 'rail');
+      const maxRouteTotal = busRoutesOnly.length ? Math.max(...busRoutesOnly.map(r => r.total)) : 1;
 
-      const barsHtml = a.routes.map(r => {
+      const barsHtml = busRoutesOnly.map(r => {
         const gPct = Math.round((r.ghosts / maxRouteTotal) * 100);
         const dPct = Math.round((r.delays / maxRouteTotal) * 100);
         return `
@@ -1858,7 +1868,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div class="kpi-lbl">On-Time Performance (${t.clean_trips} of ${t.total_evaluated} clean)</div>
           </div>
           <div class="kpi-card">
-            <div class="kpi-val" style="color:var(--red)">${t.ghost_rate_pct}%</div>
+            <div class="kpi-val" style="color:var(--red)">${trueGhostRatePct}%</div>
             <div class="kpi-lbl">Overall Ghost / Cancel Rate</div>
           </div>
           <div class="kpi-card">
