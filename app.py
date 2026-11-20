@@ -1405,6 +1405,70 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       text-transform: uppercase;
       color: var(--muted);
     }
+      .map-legend {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+    .map-preview-bar {
+      display: none;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px dashed rgba(56, 189, 248, 0.35);
+      font-size: 0.8rem;
+      color: #cbd5e1;
+      cursor: pointer;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .map-status-strip {
+      display: none;
+      margin-top: 8px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.78);
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      font-size: 0.78rem;
+      line-height: 1.4;
+      color: #e2e8f0;
+    }
+    .leaflet-popup-content-wrapper {
+      background: #0f172a !important;
+      color: #f8fafc !important;
+      border: 1px solid #334155 !important;
+      border-radius: 10px !important;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.55) !important;
+    }
+    .leaflet-popup-tip {
+      background: #0f172a !important;
+    }
+    .leaflet-popup-content {
+      margin: 8px 10px !important;
+      font-family: 'Inter', sans-serif !important;
+      font-size: 0.76rem !important;
+      line-height: 1.35 !important;
+      max-width: 190px !important;
+    }
+    .leaflet-container a.leaflet-popup-close-button {
+      color: #94a3b8 !important;
+      padding: 4px 5px 0 0 !important;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1447,14 +1511,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="map-card" id="mapCard">
         <div class="map-header">
           <div>
-            <div class="map-title">Live Maynooth Telemetry Map <span id="mapLiveCount" style="font-size:0.76rem;color:var(--muted);font-weight:500"></span></div>
+            <div class="map-title">Live Maynooth Map <span id="mapLiveCount" style="font-size:0.75rem;color:var(--muted);font-weight:500"></span></div>
+            <div class="map-legend">
+              <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>On time</span>
+              <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Late (4m+)</span>
+              <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Ghost / Suspect</span>
+            </div>
           </div>
           <div class="map-controls">
-            <button class="map-btn" type="button" onclick="resetMapView()">Center Maynooth</button>
+            <button class="map-btn" type="button" onclick="resetMapView()">Center</button>
             <button class="map-btn" type="button" id="toggleMapBtn" onclick="toggleMapPanel()">Hide Map</button>
           </div>
         </div>
+        <div class="map-preview-bar" id="mapPreviewBar" onclick="toggleMapPanel()">
+          <span id="mapPreviewText">Map collapsed ? tap to view live bus pins & station corridor</span>
+          <span style="color:#38bdf8;font-weight:700;white-space:nowrap">Show Map</span>
+        </div>
         <div id="commuteMap"></div>
+        <div class="map-status-strip" id="mapStatusStrip"></div>
       </div>
       <div id="busesBox"></div>
   </div>
@@ -1942,10 +2016,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     let commuteMap = null;
     let stopLayer = null;
     let busLayer = null;
+    let focusLineLayer = null;
     let busMarkersById = {};
-    let mapVisible = true;
+    let lastRenderedBuses = [];
+    let lastRenderedStops = {};
+    let mapVisible = (typeof window !== 'undefined' && window.innerWidth <= 640) ? false : true;
+
+    function syncMapVisibilityUI() {
+      const el = document.getElementById('commuteMap');
+      const preview = document.getElementById('mapPreviewBar');
+      const strip = document.getElementById('mapStatusStrip');
+      const btn = document.getElementById('toggleMapBtn');
+      if (!el || !btn) return;
+      el.style.display = mapVisible ? 'block' : 'none';
+      if (preview) preview.style.display = mapVisible ? 'none' : 'flex';
+      if (!mapVisible && strip) strip.style.display = 'none';
+      btn.textContent = mapVisible ? 'Hide Map' : 'Show Map';
+    }
 
     function initCommuteMap() {
+      syncMapVisibilityUI();
+      if (!mapVisible) return;
       if (commuteMap || typeof L === 'undefined') return;
       const el = document.getElementById('commuteMap');
       if (!el) return;
@@ -1956,66 +2047,151 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }).addTo(commuteMap);
       stopLayer = L.layerGroup().addTo(commuteMap);
       busLayer = L.layerGroup().addTo(commuteMap);
+      focusLineLayer = L.layerGroup().addTo(commuteMap);
     }
 
     function resetMapView() {
+      if (!mapVisible) {
+        mapVisible = true;
+        syncMapVisibilityUI();
+      }
       initCommuteMap();
-      if (commuteMap) commuteMap.setView([53.3812, -6.5935], 14);
+      if (focusLineLayer) focusLineLayer.clearLayers();
+      const strip = document.getElementById('mapStatusStrip');
+      if (strip) strip.style.display = 'none';
+      if (commuteMap) {
+        commuteMap.invalidateSize();
+        commuteMap.setView([53.3812, -6.5935], 14);
+      }
     }
 
     function toggleMapPanel() {
-      const el = document.getElementById('commuteMap');
-      const btn = document.getElementById('toggleMapBtn');
-      if (!el || !btn) return;
       mapVisible = !mapVisible;
-      el.style.display = mapVisible ? 'block' : 'none';
-      btn.textContent = mapVisible ? 'Hide Map' : 'Show Map';
-      if (mapVisible && commuteMap) {
-        setTimeout(() => commuteMap.invalidateSize(), 120);
+      syncMapVisibilityUI();
+      if (mapVisible) {
+        initCommuteMap();
+        if (commuteMap) {
+          setTimeout(() => {
+            commuteMap.invalidateSize();
+            updateCommuteMap(lastRenderedBuses, lastRenderedStops);
+          }, 90);
+        }
       }
+    }
+
+    function getTargetStopCoords(bus) {
+      const stopName = (bus && bus.stop_name ? bus.stop_name : '').toLowerCase();
+      if (stopName.includes('campus') || stopName.includes('university')) {
+        return [53.3846, -6.6006];
+      }
+      return [53.3779, -6.5897]; // Default to Maynooth Station hub
+    }
+
+    function updateMapBottomStrip(b) {
+      const strip = document.getElementById('mapStatusStrip');
+      if (!strip || !b) return;
+      const etaPhrase = b.status === 'CANCELED'
+        ? 'Canceled'
+        : (b.mins_away <= 0 ? `Due at ${b.stop_name}` : `Arrives ${b.stop_name} in ${b.mins_away} min (Pred ${b.pred_time})`);
+      strip.innerHTML = `<strong>Route ${b.route}</strong> ? ${b.headsign} ? <strong>${etaPhrase}</strong><div style="color:#94a3b8;margin-top:2px">${b.diagnostic || ''}</div>`;
+      strip.style.display = 'block';
+    }
+
+    function drawBusSightline(lat, lon, bus) {
+      if (!focusLineLayer) return;
+      focusLineLayer.clearLayers();
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const targetCoords = getTargetStopCoords(bus);
+      L.polyline([[lat, lon], targetCoords], {
+        color: '#38bdf8',
+        weight: 2.5,
+        opacity: 0.85,
+        dashArray: '5, 6'
+      }).addTo(focusLineLayer);
     }
 
     function focusBusOnMap(tripId, scrollToMap = false, fallbackLat = null, fallbackLon = null) {
       document.querySelectorAll('.bus-card.card-highlight').forEach(c => c.classList.remove('card-highlight'));
       document.querySelectorAll('[id="card-' + tripId + '"]').forEach(c => c.classList.add('card-highlight'));
 
+      if (!mapVisible) {
+        mapVisible = true;
+        syncMapVisibilityUI();
+      }
       initCommuteMap();
       if (!commuteMap) return;
-      if (!mapVisible) toggleMapPanel();
 
       if (scrollToMap) {
         const mapCard = document.getElementById('mapCard');
         if (mapCard) mapCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
 
+      const matchedBus = (lastRenderedBuses || []).find(item => item.trip_id === tripId);
+
       const panAndOpen = () => {
         commuteMap.invalidateSize();
+        updateCommuteMap(lastRenderedBuses, lastRenderedStops);
         const marker = busMarkersById[tripId];
         if (marker) {
           const ll = marker.getLatLng();
           commuteMap.setView(ll, 15, { animate: false });
           marker.openPopup();
+          if (matchedBus) {
+            drawBusSightline(ll.lat, ll.lng, matchedBus);
+            updateMapBottomStrip(matchedBus);
+          }
           return;
         }
         const lat = Number(fallbackLat);
         const lon = Number(fallbackLon);
         if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)) {
           commuteMap.setView([lat, lon], 15, { animate: false });
+          if (matchedBus) {
+            drawBusSightline(lat, lon, matchedBus);
+            updateMapBottomStrip(matchedBus);
+          }
         }
       };
 
-      setTimeout(panAndOpen, scrollToMap ? 320 : 40);
+      setTimeout(panAndOpen, scrollToMap ? 320 : 60);
     }
 
     function updateCommuteMap(buses, stopsMap) {
+      lastRenderedBuses = buses || [];
+      lastRenderedStops = stopsMap || {};
+
+      const gpsCount = lastRenderedBuses.filter(b => {
+        const la = Number(b.bus_lat);
+        const lo = Number(b.bus_lon);
+        return Number.isFinite(la) && Number.isFinite(lo) && (la !== 0 || lo !== 0);
+      }).length;
+
+      const countEl = document.getElementById('mapLiveCount');
+      if (countEl) countEl.textContent = `(${gpsCount} live GPS)`;
+      const prevTxt = document.getElementById('mapPreviewText');
+      if (prevTxt) prevTxt.textContent = `Map collapsed (${gpsCount} live GPS buses around Maynooth)`;
+
       initCommuteMap();
-      if (!commuteMap || !stopLayer || !busLayer) return;
+      if (!mapVisible || !commuteMap || !stopLayer || !busLayer) return;
 
       stopLayer.clearLayers();
-      const entries = Object.entries(stopsMap || {});
+      // Draw Maynooth Campus -> Town -> Station connection corridor (~8 min walk / 3 min bus)
+      L.polyline([
+        [53.3846, -6.6006],
+        [53.3812, -6.5915],
+        [53.3779, -6.5897]
+      ], {
+        color: '#64748b',
+        weight: 3,
+        opacity: 0.65,
+        dashArray: '4, 6'
+      }).bindPopup('<strong>Maynooth Connection Corridor</strong><br>Campus to Station (~8 min walk)').addTo(stopLayer);
+
+      const entries = Object.entries(lastRenderedStops);
       if (entries.length > 0) {
         entries.forEach(([sid, st]) => {
-          const sLat = st.stop_lat ?? st.lat; const sLon = st.stop_lon ?? st.lon;
+          const sLat = st.stop_lat ?? st.lat;
+          const sLon = st.stop_lon ?? st.lon;
           if (sLat == null || sLon == null) return;
           const isStn = (st.stop_name || '').toLowerCase().includes('station');
           const label = isStn ? 'Station' : 'Campus';
@@ -2026,45 +2202,51 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             iconAnchor: [26, 10]
           });
           L.marker([sLat, sLon], { icon })
-            .bindPopup(`<strong>${st.stop_name}</strong><br><span style="font-size:12px">Stop ID: ${sid}</span>`)
+            .bindPopup(`<strong>${st.stop_name}</strong><br>Stop ID: ${sid}`)
             .addTo(stopLayer);
         });
       } else {
         L.marker([53.3779, -6.5897]).bindPopup('<strong>Maynooth Station</strong>').addTo(stopLayer);
-        L.marker([53.3846, -6.6006]).bindPopup('<strong>Maynooth University Campus</strong>').addTo(stopLayer);
+        L.marker([53.3846, -6.6006]).bindPopup('<strong>MU Campus</strong>').addTo(stopLayer);
       }
 
       busLayer.clearLayers();
       busMarkersById = {};
-      let plotted = 0;
 
-      (buses || []).forEach(b => {
-        const lat = Number(b.bus_lat); const lon = Number(b.bus_lon);
+      lastRenderedBuses.forEach(b => {
+        const lat = Number(b.bus_lat);
+        const lon = Number(b.bus_lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return;
-        plotted += 1;
+
         let bg = '#22c55e';
+        const delayVal = Number(b.delay_mins || 0);
         if (['CANCELED', 'SILENT_GHOST_RISK', 'CROWD_CONFIRMED_GHOST', 'STALE_GPS', 'STALLED_GHOST'].includes(b.status)) {
           bg = '#ef4444';
-        } else if (b.status === 'HEAVY_DELAY' || (b.gps_eta_mins !== null && b.gps_eta_mins >= b.mins_away + 5)) {
+        } else if (b.status === 'HEAVY_DELAY' || delayVal >= 4 || (b.gps_eta_mins !== null && b.gps_eta_mins >= b.mins_away + 5)) {
           bg = '#f59e0b';
         }
+
         const icon = L.divIcon({
           className: '',
           html: `<div class="bus-pin" style="background:${bg}">${b.route}</div>`,
           iconSize: [44, 22],
           iconAnchor: [22, 11]
         });
-        const distLine = (b.distance_km !== null && b.distance_km !== undefined)
-          ? `<br><strong>Distance:</strong> ${b.distance_km} km to ${b.stop_name}`
-          : '';
+
+        const etaShort = b.status === 'CANCELED'
+          ? 'Canceled'
+          : (b.mins_away <= 0 ? `Due at ${b.stop_name}` : `Arrives ${b.stop_name} in ${b.mins_away}m`);
+        const delayShort = delayVal >= 2 ? ` (+${Math.round(delayVal)}m)` : '';
+
         const popupHtml = `
-          <div style="min-width:190px;font-size:12px;line-height:1.4">
-            <strong>Route ${b.route}</strong> ? ${b.headsign}${distLine}
-            <div style="margin-top:4px;color:#334155">${b.diagnostic || ''}</div>
+          <div>
+            <strong>${b.route}</strong> ? ${b.headsign || 'Maynooth'}<br>
+            <span style="color:#93c5fd;font-weight:600">${etaShort}${delayShort}</span>
           </div>
         `;
+
         const marker = L.marker([lat, lon], { icon })
-          .bindPopup(popupHtml)
+          .bindPopup(popupHtml, { maxWidth: 195, closeButton: true })
           .on('click', () => {
             document.querySelectorAll('.bus-card.card-highlight').forEach(c => c.classList.remove('card-highlight'));
             const card = document.getElementById('card-' + b.trip_id);
@@ -2072,13 +2254,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               card.classList.add('card-highlight');
               card.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
+            drawBusSightline(lat, lon, b);
+            updateMapBottomStrip(b);
           })
           .addTo(busLayer);
         busMarkersById[b.trip_id] = marker;
       });
-
-      const countEl = document.getElementById('mapLiveCount');
-      if (countEl) countEl.textContent = `(${plotted} live GPS vehicles plotted)`;
     }
 
   </script>
