@@ -1564,7 +1564,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         const ghostDisabled = (isTerminating || userVote) ? 'disabled' : '';
 
         return `
-          <div class="bus-card" id="card-${b.trip_id}" onclick="focusBusOnMap('${b.trip_id}')">
+          <div class="bus-card" id="card-${b.trip_id}" onclick="focusBusOnMap('${b.trip_id}', false, ${b.bus_lat ?? 'null'}, ${b.bus_lon ?? 'null'})">
             <div class="bus-top">
               <div class="route-badge">${b.route}</div>
               <div class="bus-info">
@@ -1576,7 +1576,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div class="tags">${statusBadge(b)}${flowBadge(b)}${histPill}</div>
             ${transferHtml}
             ${backupHtml}
-            ${b.diagnostic ? `<div class="diag-box ${['CANCELED','SILENT_GHOST_RISK','CROWD_CONFIRMED_GHOST','STALE_GPS','STALLED_GHOST'].includes(b.status) ? 'diag-bad' : (['HEAVY_DELAY','GPS_FAULT_VERIFIED'].includes(b.status) ? 'diag-warn' : '')}"><strong>Diagnostic:</strong> ${b.diagnostic}${(b.bus_lat !== null && b.bus_lon !== null) ? ` <span style="color:#38bdf8;font-weight:600;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();focusBusOnMap('${b.trip_id}', true)">[Locate on Map]</span>` : ''}</div>` : ''}
+            ${b.diagnostic ? `<div class="diag-box ${['CANCELED','SILENT_GHOST_RISK','CROWD_CONFIRMED_GHOST','STALE_GPS','STALLED_GHOST'].includes(b.status) ? 'diag-bad' : (['HEAVY_DELAY','GPS_FAULT_VERIFIED'].includes(b.status) ? 'diag-warn' : '')}"><strong>Diagnostic:</strong> ${b.diagnostic}${(b.bus_lat !== null && b.bus_lon !== null) ? ` <span style="color:#38bdf8;font-weight:600;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();focusBusOnMap('${b.trip_id}', true, ${b.bus_lat ?? 'null'}, ${b.bus_lon ?? 'null'})">[Locate on Map]</span>` : ''}</div>` : ''}
             <div class="verify-row" onclick="event.stopPropagation()">
               <button class="btn btn-ok ${userVote === 'ARRIVED' ? 'btn-voted' : ''}" ${arrivedDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','ARRIVED')">
@@ -1641,20 +1641,33 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
-    function focusBusOnMap(tripId, scrollToMap = false) {
+    function focusBusOnMap(tripId, scrollToMap = false, fallbackLat = null, fallbackLon = null) {
       document.querySelectorAll('.bus-card.card-highlight').forEach(c => c.classList.remove('card-highlight'));
-      const card = document.getElementById('card-' + tripId);
-      if (card) card.classList.add('card-highlight');
+      document.querySelectorAll('[id="card-' + tripId + '"]').forEach(c => c.classList.add('card-highlight'));
 
-      const marker = busMarkersById[tripId];
-      if (!marker || !commuteMap) return;
+      initCommuteMap();
+      if (!commuteMap) return;
       if (!mapVisible) toggleMapPanel();
+
       if (scrollToMap) {
-        document.getElementById('mapCard')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const mapCard = document.getElementById('mapCard');
+        if (mapCard) mapCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-      const ll = marker.getLatLng();
-      commuteMap.flyTo(ll, Math.max(commuteMap.getZoom(), 14), { duration: 0.6 });
-      marker.openPopup();
+
+      commuteMap.invalidateSize();
+      const marker = busMarkersById[tripId];
+      if (marker) {
+        const ll = marker.getLatLng();
+        commuteMap.setView(ll, Math.max(commuteMap.getZoom(), 14), { animate: true });
+        setTimeout(() => marker.openPopup(), 250);
+        return;
+      }
+
+      const lat = Number(fallbackLat);
+      const lon = Number(fallbackLon);
+      if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)) {
+        commuteMap.setView([lat, lon], 14, { animate: true });
+      }
     }
 
     function updateCommuteMap(buses, stopsMap) {
@@ -1665,7 +1678,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const entries = Object.entries(stopsMap || {});
       if (entries.length > 0) {
         entries.forEach(([sid, st]) => {
-          if (st.stop_lat == null || st.stop_lon == null) return;
+          const sLat = st.stop_lat ?? st.lat; const sLon = st.stop_lon ?? st.lon;
+          if (sLat == null || sLon == null) return;
           const isStn = (st.stop_name || '').toLowerCase().includes('station');
           const label = isStn ? 'Station' : 'Campus';
           const icon = L.divIcon({
@@ -1674,7 +1688,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             iconSize: [52, 20],
             iconAnchor: [26, 10]
           });
-          L.marker([st.stop_lat, st.stop_lon], { icon })
+          L.marker([sLat, sLon], { icon })
             .bindPopup(`<strong>${st.stop_name}</strong><br><span style="font-size:12px">Stop ID: ${sid}</span>`)
             .addTo(stopLayer);
         });
