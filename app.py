@@ -1615,6 +1615,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <button class="refresh-btn" type="button" onclick="loadData()">Refresh</button>
         </div>
       </div>
+      <div id="warnBanner" class="warn" style="display:none;margin-bottom:10px;padding:10px 12px;border-radius:10px;background:rgba(245,158,11,0.16);border:1px solid rgba(245,158,11,0.4);color:#fde68a;font-size:0.82rem"></div>
       <div class="impact-strip" id="impactStrip">
         <span>Loading cumulative reliability baseline...</span>
       </div>
@@ -2055,11 +2056,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         `Updated ${latestData.updated_at} • ${latestData.stats.ghost_or_cancel} active ghost/cancel • ${latestData.stats.transfer_risks} train risks`;
 
       const wb = document.getElementById('warnBanner');
-      if (latestData.warning) {
-        wb.textContent = latestData.warning;
-        wb.style.display = 'block';
-      } else {
-        wb.style.display = 'none';
+      if (wb) {
+        if (latestData.warning) {
+          wb.textContent = latestData.warning;
+          wb.style.display = 'block';
+        } else {
+          wb.style.display = 'none';
+        }
       }
 
       if (currentTab === 'analytics') {
