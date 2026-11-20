@@ -1267,6 +1267,59 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       background: #22c55e; color: #052e16; font-weight: 700; padding: 8px 16px;
       border-radius: 999px; font-size: 0.82rem; display: none; z-index: 50;
     }
+      .hero-banner {
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      border: 1px solid var(--border);
+      border-left-width: 5px;
+      background: var(--card);
+    }
+    .hero-banner.hero-safe {
+      border-color: rgba(34, 197, 94, 0.35);
+      border-left-color: var(--green);
+      background: linear-gradient(135deg, rgba(34, 197, 94, 0.14), rgba(15, 23, 42, 0.92));
+    }
+    .hero-banner.hero-warn {
+      border-color: rgba(245, 158, 11, 0.40);
+      border-left-color: var(--amber);
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(15, 23, 42, 0.92));
+    }
+    .hero-banner.hero-risk {
+      border-color: rgba(239, 68, 68, 0.45);
+      border-left-color: var(--red);
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.18), rgba(15, 23, 42, 0.92));
+    }
+    .hero-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .hero-pill {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      padding: 3px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
+    .hero-safe .hero-pill { background: rgba(34, 197, 94, 0.22); color: #86efac; }
+    .hero-warn .hero-pill { background: rgba(245, 158, 11, 0.24); color: #fcd34d; }
+    .hero-risk .hero-pill { background: rgba(239, 68, 68, 0.25); color: #fca5a5; }
+    .hero-meta {
+      font-size: 0.74rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .hero-msg {
+      font-size: 0.96rem;
+      font-weight: 600;
+      line-height: 1.4;
+      color: #f8fafc;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1295,6 +1348,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 
   <div id="liveView">
+      <div id="heroGuardBanner" class="hero-banner hero-safe">
+        <div class="hero-top">
+          <span class="hero-pill">CONNECTION GUARD</span>
+          <span class="hero-meta">Live Telemetry</span>
+        </div>
+        <div class="hero-msg">Evaluating live bus positions and Maynooth train departures...</div>
+      </div>
     <div class="section-title">Next Trains Departing Maynooth Station</div>
     <div class="train-strip" id="trainsBox"></div>
 
@@ -1506,6 +1566,109 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `;
     }
 
+        function hhmmToMins(hhmm) {
+      if (!hhmm || !hhmm.includes(':')) return null;
+      const parts = hhmm.split(':');
+      const h = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      if (Number.isNaN(h) || Number.isNaN(m)) return null;
+      return h * 60 + m;
+    }
+
+    function renderHeroBanner() {
+      const box = document.getElementById('heroGuardBanner');
+      if (!box || !latestData) return;
+
+      const buses = latestData.buses || [];
+      const trains = latestData.trains || [];
+      const ghostStatuses = ['CANCELED', 'SILENT_GHOST_RISK', 'CROWD_CONFIRMED_GHOST', 'STALE_GPS', 'STALLED_GHOST'];
+
+      let cls = 'hero-safe';
+      let pill = 'ALL CLEAR';
+      let meta = 'Live Connection Guard';
+      let msg = `Monitoring ${buses.length} Maynooth bus services and ${trains.length} departing trains. No active connection risks detected.`;
+
+      // Priority 1: Check explicit transfer alerts (tight or missed train connections)
+      const riskyTransfer = buses.find(b => b.transfer_alert && (ghostStatuses.includes(b.status) || b.transfer_alert.buffer_mins <= 2));
+      const tightTransfer = buses.find(b => b.transfer_alert && b.transfer_alert.buffer_mins > 2 && b.transfer_alert.buffer_mins <= 5);
+
+      if (riskyTransfer) {
+        const ta = riskyTransfer.transfer_alert;
+        cls = 'hero-risk';
+        pill = 'CONNECTION AT RISK';
+        meta = `Route ${riskyTransfer.route} to Train`;
+        const reason = riskyTransfer.status === 'CANCELED'
+          ? 'officially canceled'
+          : (ghostStatuses.includes(riskyTransfer.status)
+              ? 'flagged high ghost risk (no live GPS)'
+              : `running +${Math.round(riskyTransfer.delay_mins || 0)} min late`);
+        const backupTxt = ta.backup_train ? ` Next safe option: ${ta.backup_train}.` : '';
+        msg = `Route ${riskyTransfer.route} is ${reason}. Likely to miss the ${ta.train_dep} train to ${ta.train_dest}.${backupTxt}`;
+      } else if (tightTransfer) {
+        const ta = tightTransfer.transfer_alert;
+        cls = 'hero-warn';
+        pill = 'TIGHT CONNECTION';
+        meta = `${ta.buffer_mins} min buffer`;
+        msg = `Route ${tightTransfer.route} predicted at ${tightTransfer.pred_time}, leaving a ${ta.buffer_mins} min buffer for the ${ta.train_dep} train to ${ta.train_dest}.`;
+      } else {
+        // Priority 2: Pair the next active boardable bus with the next departing train
+        const nextBus = buses.find(b => b.pickup_type !== '1' && b.stop_role !== 'TERMINUS' && !ghostStatuses.includes(b.status));
+        const ghostBus = buses.find(b => b.pickup_type !== '1' && b.stop_role !== 'TERMINUS' && ghostStatuses.includes(b.status));
+
+        if (nextBus && trains.length > 0) {
+          const bMins = hhmmToMins(nextBus.pred_time);
+          let matchedTrain = null;
+          let buffer = null;
+          for (const tr of trains) {
+            const tMins = hhmmToMins(tr.exp_depart);
+            if (bMins !== null && tMins !== null) {
+              let diff = tMins - bMins;
+              if (diff < -720) diff += 1440;
+              if (diff >= 3 && diff <= 40) {
+                matchedTrain = tr;
+                buffer = diff;
+                break;
+              }
+            }
+          }
+          if (matchedTrain && buffer !== null) {
+            if (buffer <= 5) {
+              cls = 'hero-warn';
+              pill = 'TIGHT CONNECTION';
+              meta = `${buffer} min buffer`;
+              msg = `Route ${nextBus.route} arrives ${nextBus.pred_time}, train to ${matchedTrain.destination} departs ${matchedTrain.exp_depart} (${buffer} min buffer).`;
+            } else {
+              cls = 'hero-safe';
+              pill = 'CONNECTION SAFE';
+              meta = `${buffer} min buffer`;
+              msg = `Route ${nextBus.route} arrives ${nextBus.pred_time}, train to ${matchedTrain.destination} departs ${matchedTrain.exp_depart} (${buffer} min buffer).`;
+            }
+          } else if (ghostBus) {
+            cls = 'hero-risk';
+            pill = 'GHOST BUS ALERT';
+            meta = `Route ${ghostBus.route}`;
+            const backupTxt = ghostBus.backup_bus ? ` Next option: ${ghostBus.backup_bus}.` : '';
+            msg = `Route ${ghostBus.route} (${ghostBus.sched_time} to ${ghostBus.headsign}) shows no live GPS signal.${backupTxt}`;
+          }
+        } else if (ghostBus) {
+          cls = 'hero-risk';
+          pill = 'GHOST BUS ALERT';
+          meta = `Route ${ghostBus.route}`;
+          const backupTxt = ghostBus.backup_bus ? ` Next option: ${ghostBus.backup_bus}.` : '';
+          msg = `Route ${ghostBus.route} (${ghostBus.sched_time} to ${ghostBus.headsign}) shows no live GPS signal.${backupTxt}`;
+        }
+      }
+
+      box.className = `hero-banner ${cls}`;
+      box.innerHTML = `
+        <div class="hero-top">
+          <span class="hero-pill">${pill}</span>
+          <span class="hero-meta">${meta}</span>
+        </div>
+        <div class="hero-msg">${msg}</div>
+      `;
+    }
+
     function render() {
       if (!latestData) return;
       document.getElementById('statusLine').textContent =
@@ -1529,6 +1692,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       document.getElementById('liveView').style.display = 'block';
       document.getElementById('analyticsView').style.display = 'none';
 
+      renderHeroBanner();
       const trainsBox = document.getElementById('trainsBox');
       trainsBox.innerHTML = latestData.trains.map(tr => `
         <div class="train-card">
