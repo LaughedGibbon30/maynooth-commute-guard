@@ -1217,6 +1217,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .bus-card.card-highlight {
       border-color: #38bdf8 !important; box-shadow: 0 0 0 2px rgba(56,189,248,0.35);
     }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    .eta-mins, .eta-clock, .kpi-val, .route-badge { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+    .pill-bar { scrollbar-width: none; -ms-overflow-style: none; }
+    .pill-bar::-webkit-scrollbar { display: none; }
     .bus-info { flex: 1; }
     .bus-head { font-weight: 600; font-size: 0.95rem; }
     .bus-stop { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
@@ -1264,6 +1268,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       border-radius: 999px; font-size: 0.82rem; display: none; z-index: 50;
     }
   </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
@@ -1531,8 +1538,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       `).join('') || '<div class="sub">No departing trains in window.</div>';
 
       const voted = getVoted();
+      const seenTripsAll = new Set();
       const buses = latestData.buses.filter(b => {
-        if (currentTab === 'all') return true;
+        if (currentTab === 'all') {
+          const tripKey = `${b.service_date}|${b.trip_id}`;
+          if (seenTripsAll.has(tripKey)) return false;
+          seenTripsAll.add(tripKey);
+          return true;
+        }
         if (currentTab === 'outbound') return b.maynooth_flow === 'OUTBOUND' || b.maynooth_flow === 'THROUGH';
         if (currentTab === 'inbound') return b.maynooth_flow === 'INBOUND' || b.maynooth_flow === 'THROUGH';
         return b.stop_zone === currentTab;
