@@ -556,7 +556,7 @@ def get_active_service_ids(service_date: datetime) -> set[str]:
 
 def fetch_gtfs_rt(url: str) -> gtfs_realtime_pb2.FeedMessage:
     headers = {"x-api-key": NTA_API_KEY, "Cache-Control": "no-cache"}
-    resp = HTTP.get(url, headers=headers, timeout=(4, 9))
+    resp = HTTP.get(url, headers=headers, timeout=(10, 25))
     resp.raise_for_status()
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(resp.content)
@@ -564,7 +564,7 @@ def fetch_gtfs_rt(url: str) -> gtfs_realtime_pb2.FeedMessage:
 
 
 def fetch_trains(now: datetime) -> list[dict]:
-    resp = HTTP.get(IRISH_RAIL_URL, timeout=(4, 8))
+    resp = HTTP.get(IRISH_RAIL_URL, timeout=(10, 20))
     resp.raise_for_status()
     root = ET.fromstring(resp.text)
     ns = {"ir": "http://api.irishrail.ie/realtime/"}
@@ -599,25 +599,40 @@ def fetch_trains(now: datetime) -> list[dict]:
     return trains
 
 
+WARMING_IN_PROGRESS = False
+
+
 def _warm_cache_background():
+    global WARMING_IN_PROGRESS
     try:
         get_live_snapshot(force_refresh=True)
     except Exception as exc:
-        print(f"Background warmup note: {exc}")
+        CACHE["last_error"] = f"{type(exc).__name__}: {exc}"
+        print(f"Background warmup error: {CACHE['last_error']}")
+    finally:
+        WARMING_IN_PROGRESS = False
 
 
 def get_live_snapshot(force_refresh: bool = False) -> dict:
+    global WARMING_IN_PROGRESS
     now_ts = time.time()
     if not force_refresh and CACHE["payload"] and (now_ts - CACHE["timestamp"] < CACHE_TTL_SECONDS):
         return CACHE["payload"]
 
     if not force_refresh and CACHE["payload"] is None:
-        if not CACHE_LOCK.locked():
+        if not WARMING_IN_PROGRESS and not CACHE_LOCK.locked():
+            WARMING_IN_PROGRESS = True
             threading.Thread(target=_warm_cache_background, daemon=True).start()
+        last_err = CACHE.get("last_error")
+        warn_msg = (
+            f"Retrying live TFI & Irish Rail feeds ({last_err})..."
+            if last_err
+            else "Warming live TFI GTFS-RT & Irish Rail feeds -- updating automatically in a few seconds..."
+        )
         return {
             "updated_at": datetime.now(TZ).strftime("%H:%M:%S"),
             "warming_up": True,
-            "warning": "Warming live TFI GTFS-RT & Irish Rail feeds ? updating automatically in a few seconds...",
+            "warning": warn_msg,
             "trains": [],
             "buses": [],
             "stops": LOOKUP.get("stops", {}),
@@ -632,7 +647,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         return {
             "updated_at": datetime.now(TZ).strftime("%H:%M:%S"),
             "warming_up": True,
-            "warning": "Refreshing live TFI GTFS-RT & Irish Rail feeds ? updating automatically...",
+            "warning": "Refreshing live TFI GTFS-RT & Irish Rail feeds -- updating automatically...",
             "trains": [],
             "buses": [],
             "stops": LOOKUP.get("stops", {}),
@@ -664,7 +679,23 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
         try:
             vp_feed = fetch_gtfs_rt(VEHICLE_POSITIONS_URL)
             tu_feed = fetch_gtfs_rt(TRIP_UPDATES_URL)
-        except requests.exceptions.HTTPError as exc:
+        except requests.exceptions.RequestException as exc:
+            CACHE["last_error"] = f"{type(exc).__name__}: {exc}"
+            if not isinstance(exc, requests.exceptions.HTTPError):
+                if CACHE["payload"]:
+                    stale = dict(CACHE["payload"])
+                    stale["warning"] = f"Upstream TFI feed delay ({type(exc).__name__}) -- showing cached snapshot"
+                    return stale
+                return {
+                    "updated_at": now.strftime("%H:%M:%S"),
+                    "warming_up": True,
+                    "warning": f"Upstream TFI feed timeout ({type(exc).__name__}) -- retrying automatically...",
+                    "trains": [],
+                    "buses": [],
+                    "stops": LOOKUP.get("stops", {}),
+                    "analytics": compute_phase2_analytics(),
+                    "stats": {"active_gps_national": 0, "ghost_or_cancel": 0, "transfer_risks": 0},
+                }
             status_code = exc.response.status_code if exc.response is not None else 0
             retry_after = 65
             if status_code == 429 and exc.response is not None:
