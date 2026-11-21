@@ -599,16 +599,46 @@ def fetch_trains(now: datetime) -> list[dict]:
     return trains
 
 
+def _warm_cache_background():
+    try:
+        get_live_snapshot(force_refresh=True)
+    except Exception as exc:
+        print(f"Background warmup note: {exc}")
+
+
 def get_live_snapshot(force_refresh: bool = False) -> dict:
     now_ts = time.time()
     if not force_refresh and CACHE["payload"] and (now_ts - CACHE["timestamp"] < CACHE_TTL_SECONDS):
         return CACHE["payload"]
 
+    if not force_refresh and CACHE["payload"] is None:
+        if not CACHE_LOCK.locked():
+            threading.Thread(target=_warm_cache_background, daemon=True).start()
+        return {
+            "updated_at": datetime.now(TZ).strftime("%H:%M:%S"),
+            "warming_up": True,
+            "warning": "Warming live TFI GTFS-RT & Irish Rail feeds ? updating automatically in a few seconds...",
+            "trains": [],
+            "buses": [],
+            "stops": LOOKUP.get("stops", {}),
+            "analytics": compute_phase2_analytics(),
+            "stats": {"active_gps_national": 0, "ghost_or_cancel": 0, "transfer_risks": 0},
+        }
+
     acquired = CACHE_LOCK.acquire(blocking=False)
     if not acquired:
         if CACHE["payload"]:
             return CACHE["payload"]
-        CACHE_LOCK.acquire()
+        return {
+            "updated_at": datetime.now(TZ).strftime("%H:%M:%S"),
+            "warming_up": True,
+            "warning": "Refreshing live TFI GTFS-RT & Irish Rail feeds ? updating automatically...",
+            "trains": [],
+            "buses": [],
+            "stops": LOOKUP.get("stops", {}),
+            "analytics": compute_phase2_analytics(),
+            "stats": {"active_gps_national": 0, "ghost_or_cancel": 0, "transfer_risks": 0},
+        }
 
     try:
         now_ts = time.time()
@@ -619,11 +649,11 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             wait_secs = int(CACHE["cooldown_until"] - now_ts)
             if CACHE["payload"]:
                 stale = dict(CACHE["payload"])
-                stale["warning"] = f"NTA rate-limit cooldown ({wait_secs}s left) — showing cached snapshot"
+                stale["warning"] = f"NTA rate-limit cooldown ({wait_secs}s left) ? showing cached snapshot"
                 return stale
             return {
                 "updated_at": datetime.now(TZ).strftime("%H:%M:%S"),
-                "warning": f"NTA API cooling down after rate limit — retrying in {wait_secs}s",
+                "warning": f"NTA API cooling down after rate limit ? retrying in {wait_secs}s",
                 "trains": [],
                 "buses": [],
                 "analytics": compute_phase2_analytics(),
@@ -2250,6 +2280,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         const res = await fetch('/api/live');
         latestData = await res.json();
         render();
+        if (latestData && latestData.warming_up) {
+          setTimeout(loadData, 4000);
+        }
       } catch (e) {
         document.getElementById('statusLine').textContent = 'Connection error — retrying...';
       }
