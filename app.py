@@ -380,31 +380,29 @@ def compute_phase2_analytics() -> dict:
         route_eval_map[rt] += ev
         route_clean_map[rt] += cl
 
-    if totals["total_evaluated"] > 0:
-        total_gh = totals["silent_ghosts"] + totals["official_canceled"] + totals["stalled_ghosts"]
+    total_gh = totals["silent_ghosts"] + totals["official_canceled"] + totals["stalled_ghosts"]
+    if totals["total_evaluated"] > 0 or total_gh > 0:
+        totals["total_evaluated"] = max(totals["total_evaluated"], totals["clean_trips"] + total_gh)
+        totals["clean_trips"] = max(0, totals["total_evaluated"] - total_gh)
         totals["ghost_rate_pct"] = round((total_gh / totals["total_evaluated"]) * 100, 1)
         totals["otp_pct"] = round((totals["clean_trips"] / totals["total_evaluated"]) * 100, 1)
 
-    ranked_routes = sorted(
-        [
-            {
-                "route": rt,
-                "ghosts": st["ghosts"] + st["canceled"],
-                "delays": st["delays"],
-                "total": st["total"],
-                "evaluated": max(route_eval_map[rt], st["total"]),
-                "ghost_rate_pct": round(((st["ghosts"] + st["canceled"]) / max(route_eval_map[rt], st["total"])) * 100, 1)
-                if max(route_eval_map[rt], st["total"]) > 0
-                else 0.0,
-                "otp_pct": round((route_clean_map[rt] / max(route_eval_map[rt], st["total"])) * 100, 1)
-                if max(route_eval_map[rt], st["total"]) > 0
-                else 0.0,
-            }
-            for rt, st in route_stats.items()
-        ],
-        key=lambda x: x["total"],
-        reverse=True,
-    )
+    ranked_routes = []
+    for rt, st in route_stats.items():
+        r_gh = st["ghosts"] + st["canceled"]
+        r_dl = st["delays"]
+        r_ev = max(route_eval_map[rt], st["total"], r_gh + r_dl)
+        r_cl = max(0, r_ev - r_gh - r_dl)
+        ranked_routes.append({
+            "route": rt,
+            "ghosts": r_gh,
+            "delays": r_dl,
+            "total": st["total"],
+            "evaluated": r_ev,
+            "ghost_rate_pct": round((r_gh / r_ev) * 100, 1) if r_ev > 0 else 0.0,
+            "otp_pct": round((r_cl / r_ev) * 100, 1) if r_ev > 0 else 0.0,
+        })
+    ranked_routes.sort(key=lambda x: x["total"], reverse=True)
 
     ranked_operators = sorted(
         [
@@ -1858,7 +1856,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (b.status === 'SILENT_GHOST_RISK') return '<span class="tag tag-ghost">SILENT GHOST RISK (NO GPS)</span>';
       if (b.status === 'STALLED_GHOST') return '<span class="tag tag-ghost">STALLED / PHANTOM ETA</span>';
       if (b.status === 'STALE_GPS') return '<span class="tag tag-ghost">FROZEN GPS (STALE PING)</span>';
-      const distTxt = (b.distance_km !== null && b.distance_km !== undefined) ? ` ? ${b.distance_km} km away` : '';
+      const distTxt = (b.distance_km !== null && b.distance_km !== undefined) ? ` \u2022 ${b.distance_km} km away` : '';
       const lagTxt = (b.gps_eta_mins !== null && b.gps_eta_mins !== undefined && b.gps_eta_mins >= b.mins_away + 5)
         ? ` (~${b.gps_eta_mins}m by GPS)`
         : '';
@@ -1871,10 +1869,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
 
     function flowBadge(b) {
-      if (b.pickup_type === '1') return '<span class="tag tag-sched">INBOUND ? DROP-OFF ONLY</span>';
-      if (b.drop_off_type === '1') return '<span class="tag tag-hist">OUTBOUND ? PICK-UP ONLY</span>';
-      if (b.maynooth_flow === 'OUTBOUND') return '<span class="tag tag-hist">OUTBOUND ? LEAVING MAYNOOTH</span>';
-      if (b.maynooth_flow === 'INBOUND') return '<span class="tag tag-sched">INBOUND ? TO MAYNOOTH</span>';
+      if (b.pickup_type === '1') return '<span class="tag tag-sched">INBOUND \u2022 DROP-OFF ONLY</span>';
+      if (b.drop_off_type === '1') return '<span class="tag tag-hist">OUTBOUND \u2022 PICK-UP ONLY</span>';
+      if (b.maynooth_flow === 'OUTBOUND') return '<span class="tag tag-hist">OUTBOUND \u2022 LEAVING MAYNOOTH</span>';
+      if (b.maynooth_flow === 'INBOUND') return '<span class="tag tag-sched">INBOUND \u2022 TO MAYNOOTH</span>';
       return '<span class="tag tag-sched">THROUGH ROUTE</span>';
     }
 
@@ -1901,15 +1899,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const highStatuses = ['CANCELED', 'SILENT_GHOST_RISK', 'CROWD_CONFIRMED_GHOST', 'STALE_GPS', 'STALLED_GHOST'];
       const delayMins = Math.round(Number(b.delay_mins || 0));
       if (b.status === 'CANCELED') {
-        return `<div class="tfi-compare"><strong>TFI Timetable:</strong> ${b.sched_time} ? <strong>Guard:</strong> Officially canceled in live feed</div>`;
+        return `<div class="tfi-compare"><strong>TFI Timetable:</strong> ${b.sched_time} \u2022 <strong>Guard:</strong> Officially canceled in live feed</div>`;
       }
       if (highStatuses.includes(b.status)) {
         const tfiClaim = b.mins_away <= 1 ? 'Due' : `${b.sched_time}`;
-        return `<div class="tfi-compare"><strong>TFI Shows:</strong> ${tfiClaim} ? <strong>Guard:</strong> High ghost risk (no active GPS ping)</div>`;
+        return `<div class="tfi-compare"><strong>TFI Shows:</strong> ${tfiClaim} \u2022 <strong>Guard:</strong> High ghost risk (no active GPS ping)</div>`;
       }
       if (delayMins >= 3) {
         const tfiClaim = b.mins_away <= 1 ? 'Due' : `Sched ${b.sched_time}`;
-        return `<div class="tfi-compare"><strong>TFI Shows:</strong> ${tfiClaim} ? <strong>Guard:</strong> Running +${delayMins} min late (Pred ${b.pred_time})</div>`;
+        return `<div class="tfi-compare"><strong>TFI Shows:</strong> ${tfiClaim} \u2022 <strong>Guard:</strong> Running +${delayMins} min late (Pred ${b.pred_time})</div>`;
       }
       return '';
     }
@@ -1930,7 +1928,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="bar-row">
             <div class="bar-head">
               <strong>Route ${r.route}</strong>
-              <span class="sub">${r.ghosts} ghost (${r.ghost_rate_pct}%) ? ${r.delays} delay ? ${r.otp_pct}% OTP (${r.evaluated} trips)</span>
+              <span class="sub">${r.ghosts} ghost (${r.ghost_rate_pct}%) \u2022 ${r.delays} delay \u2022 ${r.otp_pct}% OTP (${r.evaluated} trips)</span>
             </div>
             <div class="bar-track">
               <div class="bar-ghost" style="width:${gPct}%"></div>
@@ -1948,7 +1946,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="bar-row">
             <div class="bar-head">
               <strong>${o.operator}</strong>
-              <span class="sub">${o.ghosts} ghost/cancel ? ${o.delays} heavy delays</span>
+              <span class="sub">${o.ghosts} ghost/cancel \u2022 ${o.delays} heavy delays</span>
             </div>
             <div class="bar-track">
               <div class="bar-ghost" style="width:${gPct}%"></div>
@@ -2132,7 +2130,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const totalGhosts = Number(t.silent_ghosts || 0) + Number(t.official_canceled || 0);
       if (impactEl) {
         impactEl.innerHTML = `
-          <span><strong>${t.total_evaluated || 0}</strong> trips monitored ? <strong>${totalGhosts}</strong> ghost/canceled buses caught</span>
+          <span><strong>${t.total_evaluated || 0}</strong> trips monitored \u2022 <strong>${totalGhosts}</strong> ghost/canceled buses caught</span>
           <span style="color:#86efac;font-weight:700">${t.crowd_total || 0} student verifications</span>
         `;
       }
@@ -2184,7 +2182,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="train-card ${idx === 0 ? 'train-primary' : 'train-secondary'}">
           ${idx === 0 ? '<div class="train-tag">Next Departure</div>' : ''}
           <div class="train-dest">To ${tr.destination}</div>
-          <div class="train-meta">Dep ${tr.exp_depart} ? Due in <strong>${tr.due_in}m</strong> ${tr.late_mins > 0 ? `(+${tr.late_mins}m late)` : ''}</div>
+          <div class="train-meta">Dep ${tr.exp_depart} \u2022 Due in <strong>${tr.due_in}m</strong> ${tr.late_mins > 0 ? `(+${tr.late_mins}m late)` : ''}</div>
         </div>
       `).join('') || '<div class="sub">No departing trains in window.</div>';
 
@@ -2224,10 +2222,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         } else if (delayRounded >= 2) {
           const delayColor = delayRounded >= 8 ? 'var(--red)' : 'var(--amber)';
           const minsTxt = b.mins_away <= 0 ? 'Due' : `${b.mins_away}m`;
-          etaHtml = `<div class="eta-mins" style="color:${delayColor}">+${delayRounded} min</div><div class="eta-clock">Pred ${b.pred_time} (${minsTxt}) ? Sched ${b.sched_time}</div>`;
+          etaHtml = `<div class="eta-mins" style="color:${delayColor}">+${delayRounded} min</div><div class="eta-clock">Pred ${b.pred_time} (${minsTxt}) \u2022 Sched ${b.sched_time}</div>`;
         } else {
           const minsTxt = b.mins_away <= 0 ? 'Due now' : `in ${b.mins_away} min`;
-          etaHtml = `<div class="eta-mins">Pred ${b.pred_time}</div><div class="eta-clock">${minsTxt} ? Sched ${b.sched_time}</div>`;
+          etaHtml = `<div class="eta-mins">Pred ${b.pred_time}</div><div class="eta-clock">${minsTxt} \u2022 Sched ${b.sched_time}</div>`;
         }
 
         const transferHtml = b.transfer_alert
@@ -2272,7 +2270,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <div class="route-badge">${b.route}</div>
               <div class="bus-info">
                 <div class="bus-head">${b.headsign || 'Maynooth Service'}</div>
-                <div class="bus-stop">${b.stop_name} ? <strong>${b.operator}</strong>${relInlineHtml}</div>
+                <div class="bus-stop">${b.stop_name} \u2022 <strong>${b.operator}</strong>${relInlineHtml}</div>
               </div>
               <div class="eta">${etaHtml}</div>
             </div>
@@ -2285,7 +2283,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <summary>Telemetry & historical details</summary>
               <div class="card-details-body">
                 <div><strong>Direction:</strong> ${b.maynooth_flow || 'THROUGH'} (${isTerminating ? 'Drop-off / Terminates here' : 'Boarding stop'})</div>
-                <div><strong>Live Telemetry:</strong> ${distInfo} ? Scheduled ${b.sched_time}</div>
+                <div><strong>Live Telemetry:</strong> ${distInfo} \u2022 Scheduled ${b.sched_time}</div>
                 <div><strong>Route History:</strong> ${histInfo}</div>
               </div>
             </details>
@@ -2293,7 +2291,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div class="verify-row" onclick="event.stopPropagation()">
               <button class="btn btn-ok ${userVote === 'ARRIVED' ? 'btn-voted btn-pop' : ''}" ${arrivedDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','ARRIVED')">
-                ${userVote === 'ARRIVED' ? 'Voted Arrived' : 'Bus Arrived'} (${b.crowd.ARRIVED})
+                ${userVote === 'ARRIVED' \u2022 'Voted Arrived' : 'Bus Arrived'} (${b.crowd.ARRIVED})
               </button>
               <button class="btn btn-bad ${userVote === 'GHOST' ? 'btn-voted btn-pop' : ''}" ${ghostDisabled}
                 onclick="sendVerify('${b.trip_id}','${b.service_date}','${b.route}','${b.stop_name.replace(/'/g, "")}','${b.status}','GHOST')">
@@ -2309,7 +2307,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         finalHtml = '<div class="sub">No boardable buses scheduled in the next 75 minutes for this filter.</div>';
       }
       if (terminatingBuses.length > 0) {
-        finalHtml += `<div class="term-divider">Arriving Only ? Terminates Here (Cannot Board)</div>`;
+        finalHtml += `<div class="term-divider">Arriving Only \u2022 Terminates Here (Cannot Board)</div>`;
         finalHtml += terminatingBuses.map(b => renderBusCard(b, true)).join('');
       }
       busesBox.innerHTML = finalHtml;
@@ -2412,7 +2410,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const etaPhrase = b.status === 'CANCELED'
         ? 'Canceled'
         : (b.mins_away <= 0 ? `Due at ${b.stop_name}` : `Arrives ${b.stop_name} in ${b.mins_away} min (Pred ${b.pred_time})`);
-      strip.innerHTML = `<strong>Route ${b.route}</strong> ? ${b.headsign} ? <strong>${etaPhrase}</strong><div style="color:#94a3b8;margin-top:2px">${b.diagnostic || ''}</div>`;
+      strip.innerHTML = `<strong>Route ${b.route}</strong> \u2022 ${b.headsign} \u2022 <strong>${etaPhrase}</strong><div style="color:#94a3b8;margin-top:2px">${b.diagnostic || ''}</div>`;
       strip.style.display = 'block';
     }
 
@@ -2559,7 +2557,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         const popupHtml = `
           <div>
-            <strong>${b.route}</strong> ? ${b.headsign || 'Maynooth'}<br>
+            <strong>${b.route}</strong> \u2022 ${b.headsign || 'Maynooth'}<br>
             <span style="color:#93c5fd;font-weight:600">${etaShort}${delayShort}</span>
           </div>
         `;
