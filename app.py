@@ -3,6 +3,7 @@ import csv
 import json
 import math
 import os
+import concurrent.futures
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -680,8 +681,16 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
 
         now = datetime.now(TZ)
         try:
-            vp_feed = fetch_gtfs_rt(VEHICLE_POSITIONS_URL)
-            tu_feed = fetch_gtfs_rt(TRIP_UPDATES_URL)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+                fut_vp = pool.submit(fetch_gtfs_rt, VEHICLE_POSITIONS_URL)
+                fut_tu = pool.submit(fetch_gtfs_rt, TRIP_UPDATES_URL)
+                fut_tr = pool.submit(fetch_trains, now)
+                vp_feed = fut_vp.result()
+                tu_feed = fut_tu.result()
+                try:
+                    trains = fut_tr.result()
+                except Exception:
+                    trains = []
         except requests.exceptions.RequestException as exc:
             CACHE["last_error"] = f"{type(exc).__name__}: {exc}"
             if not isinstance(exc, requests.exceptions.HTTPError):
@@ -806,10 +815,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
             if t.route_id and t.start_time:
                 trip_updates_fallback[(t.route_id, t.start_time)] = payload
 
-        try:
-            trains = fetch_trains(now)
-        except Exception:
-            trains = []
+        # trains already fetched concurrently above
 
         # 1. Background Phase 2 Logging (Trip-level ghosts + Dedicated Station-stop transfers)
         active_window_trips = {}
@@ -1211,7 +1217,7 @@ def get_live_snapshot(force_refresh: bool = False) -> dict:
 
 
 def background_logger_worker():
-    time.sleep(8)
+    time.sleep(1)
     while True:
         try:
             get_live_snapshot(force_refresh=True)
