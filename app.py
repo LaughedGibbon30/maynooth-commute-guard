@@ -2328,7 +2328,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
-    if (typeof syncMapVisibilityUI === 'function') syncMapVisibilityUI();
     loadData();
     setInterval(loadData, 45000);
   
@@ -2352,6 +2351,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (!mapVisible && strip) strip.style.display = 'none';
       btn.textContent = mapVisible ? 'Hide Map' : 'Show Map';
     }
+    syncMapVisibilityUI();
 
     function initCommuteMap() {
       syncMapVisibilityUI();
