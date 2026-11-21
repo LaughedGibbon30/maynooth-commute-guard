@@ -602,6 +602,9 @@ def fetch_trains(now: datetime) -> list[dict]:
 WARMING_IN_PROGRESS = False
 
 
+WARMING_IN_PROGRESS = False
+
+
 def _warm_cache_background():
     global WARMING_IN_PROGRESS
     try:
